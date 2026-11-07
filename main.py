@@ -41,15 +41,15 @@ def receive_update():
         return '', 200
     return '', 403
 
-# --- HÀM TẠO LINK (MỖI LINK 1 MÃ TOKEN KHÁC NHAU) ---
+# --- HÀM TẠO LINK (ẨN MÃ TOKEN) ---
 def generate_link4m(chat_id, prod_name, links_done, req_links):
-    # Tạo mã Token duy nhất cho lượt vượt này (VD: MDUYK-HSHPZ5)
+    # Tạo mã Token duy nhất, KHÔNG hiển thị cho khách
     unique_token = f"MDUYK-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
     
-    # Lưu Token này vào Firebase để xí phần
+    # Lưu Token vào Firebase
     requests.put(FIREBASE_URL + f"sessions/{chat_id}/active_token.json", json=unique_token)
     
-    # Gắn Token vào URL gửi cho Link4M
+    # Gắn Token vào URL
     target_url = f"{RENDER_URL}/callback/{chat_id}/{unique_token}"
     api_url = f"https://link4m.co/api-shorten/v2?api={LINK4M_TOKEN}&url={target_url}"
     
@@ -58,7 +58,8 @@ def generate_link4m(chat_id, prod_name, links_done, req_links):
         if res.get('status') == 'success':
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton(f"👉 VƯỢT LINK {links_done + 1}/{req_links}", url=res.get('shortenedUrl')))
-            bot.send_message(chat_id, f"Vui lòng vượt link {links_done + 1}/{req_links} bên dưới.\n*(Mã: {unique_token})*", reply_markup=markup, parse_mode='Markdown')
+            # ĐÃ XÓA PHẦN HIỂN THỊ MÃ TOKEN
+            bot.send_message(chat_id, f"Vui lòng vượt link {links_done + 1}/{req_links} bên dưới.", reply_markup=markup)
     except:
         bot.send_message(chat_id, "❌ Lỗi tạo link từ Link4M!")
 
@@ -71,11 +72,10 @@ def link4m_callback(chat_id, token_from_url):
         session = res.json()
         
         if session:
-            # KIỂM TRA: Mã trên URL phải khớp với mã đang chờ trong Firebase
             saved_token = session.get("active_token")
             
+            # Nếu mã không khớp (ví dụ F5), trả về HTML báo lỗi
             if saved_token != token_from_url:
-                # Nếu mã không khớp (ví dụ F5 lại link cũ), trả về HTML thông báo
                 html = """
                 <html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
                 <body style="background:#0b090a;color:#f6eef0;text-align:center;padding-top:50px;font-family:sans-serif;">
@@ -86,7 +86,7 @@ def link4m_callback(chat_id, token_from_url):
                 """
                 return html, 403
             
-            # NẾU KHỚP: Xóa ngay mã Token này đi để không thể dùng lại
+            # Xóa token ngay lập tức
             requests.delete(FIREBASE_URL + f"sessions/{chat_id}/active_token.json")
             
             links_done = session.get("links_done", 0) + 1
@@ -94,7 +94,6 @@ def link4m_callback(chat_id, token_from_url):
             prod_name = session.get("product")
             
             if links_done >= req_links:
-                # Đã đủ link -> Cấp OTP
                 otp = ''.join(random.choices(string.digits, k=6))
                 requests.put(FIREBASE_URL + f"otps/{otp}.json", json={"chat_id": chat_id, "product": prod_name})
                 requests.delete(FIREBASE_URL + f"sessions/{chat_id}.json")
@@ -115,7 +114,6 @@ def link4m_callback(chat_id, token_from_url):
                 """
                 return html_ok, 200
             else:
-                # Chưa đủ link -> Lưu tiến độ và gửi link mới (với mã khác)
                 requests.put(FIREBASE_URL + f"sessions/{chat_id}/links_done.json", json=links_done)
                 generate_link4m(chat_id, prod_name, links_done, req_links)
                 
@@ -215,8 +213,6 @@ def buy_product(call):
              return
 
         req_links = products[prod_name]["links_required"]
-        
-        # Reset phiên làm việc
         requests.put(FIREBASE_URL + f"sessions/{chat_id}.json", json={"product": prod_name, "links_done": 0, "links_required": req_links})
         generate_link4m(chat_id, prod_name, 0, req_links)
             
