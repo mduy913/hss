@@ -5,12 +5,13 @@ import random
 import string
 import threading
 import time
-import json
+import urllib.parse
 from flask import Flask, request
 
 # ================= CẤU HÌNH =================
 BOT_TOKEN = "8314558446:AAFGz92fVeLdomzfN0EeNZk-HFtDSC8hHEg"
 LINK4M_TOKEN = "699ac288bb556c3eae114a58"
+# ĐIỀN CHÍNH XÁC LINK RENDER CỦA BẠN VÀO ĐÂY (Có https://)
 RENDER_URL = "https://hss-hsha.onrender.com" 
 FIREBASE_URL = "https://shopmduy-default-rtdb.asia-southeast1.firebasedatabase.app/"
 # ============================================
@@ -54,8 +55,7 @@ def receive_update():
         update = telebot.types.Update.de_json(json_string)
         bot.process_new_updates([update])
         return '', 200
-    else:
-        return '', 403
+    return '', 403
 
 # --- WEBHOOK CỦA LINK4M ---
 @app.route('/callback/<chat_id>/<token>', methods=['GET'])
@@ -176,16 +176,21 @@ def list_products(message):
         
     markup = InlineKeyboardMarkup()
     for name in products:
-        markup.add(InlineKeyboardButton(f"🎁 {name}", callback_data=f"buy_{name}"))
+        # Mã hóa tên sản phẩm để tránh lỗi dấu cách
+        safe_name = urllib.parse.quote(name)
+        markup.add(InlineKeyboardButton(f"🎁 {name}", callback_data=f"buy_{safe_name}"))
     bot.send_message(message.chat.id, "Chọn sản phẩm:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
 def buy_product(call):
     try:
-        # Tắt loading trên nút bấm ngay lập tức
+        # Tắt loading trên nút ngay lập tức
         bot.answer_callback_query(call.id)
         
-        prod_name = call.data.split('_')[1]
+        # Giải mã tên sản phẩm
+        encoded_name = call.data.split('_')[1]
+        prod_name = urllib.parse.unquote(encoded_name)
+        
         chat_id = call.message.chat.id
         
         if chat_id in USER_SESSIONS:
@@ -205,17 +210,21 @@ def buy_product(call):
         target_url = f"{RENDER_URL}/callback/{chat_id}/{token}"
         api_url = f"https://link4m.co/api-shorten/v2?api={LINK4M_TOKEN}&url={target_url}"
         
-        res = requests.get(api_url).json()
-        if res.get('status') == 'success':
-            markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton(f"👉 VƯỢT LINK 1/{req_links}", url=res.get('shortenedUrl')))
-            bot.send_message(chat_id, f"Đã chọn: {prod_name}\nBấm nút dưới để làm nhiệm vụ.", reply_markup=markup)
-        else:
-            bot.send_message(chat_id, "❌ Lỗi tạo link Link4M!")
+        try:
+            res = requests.get(api_url, timeout=10).json()
+            if res.get('status') == 'success':
+                markup = InlineKeyboardMarkup()
+                markup.add(InlineKeyboardButton(f"👉 VƯỢT LINK 1/{req_links}", url=res.get('shortenedUrl')))
+                bot.send_message(chat_id, f"Đã chọn: {prod_name}\nBấm nút dưới để làm nhiệm vụ.", reply_markup=markup)
+            else:
+                bot.send_message(chat_id, "❌ Lỗi tạo link từ Link4M!")
+                del USER_SESSIONS[chat_id]
+        except Exception as e:
+            bot.send_message(chat_id, "❌ Lỗi kết nối mạng, thử lại sau!")
             del USER_SESSIONS[chat_id]
             
     except Exception as e:
-        print("Lỗi nút bấm:", e)
+        print("Lỗi xử lý nút:", e)
 
 # --- HÀM CHỐNG NGỦ (TỰ ĐỘNG PING) ---
 def keep_alive():
@@ -227,8 +236,14 @@ def keep_alive():
 
 # --- KHỞI ĐỘNG ---
 if __name__ == '__main__':
+    # Xóa webhook cũ để dọn dẹp bộ nhớ đệm của Telegram
     bot.remove_webhook()
     time.sleep(1)
+    # Cài webhook mới
     bot.set_webhook(url=f"{RENDER_URL}/{BOT_TOKEN}")
+    
+    # Chạy luồng chống ngủ
     threading.Thread(target=keep_alive, daemon=True).start()
+    
+    # Chạy app
     app.run(host='0.0.0.0', port=3000)
