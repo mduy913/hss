@@ -182,7 +182,7 @@ def list_products(message):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
 def buy_product(call):
     try:
-        # Tắt ngay hiệu ứng loading trên nút bấm
+        # Tắt loading trên nút bấm ngay lập tức
         bot.answer_callback_query(call.id)
         
         prod_name = call.data.split('_')[1]
@@ -205,23 +205,13 @@ def buy_product(call):
         target_url = f"{RENDER_URL}/callback/{chat_id}/{token}"
         api_url = f"https://link4m.co/api-shorten/v2?api={LINK4M_TOKEN}&url={target_url}"
         
-        # Báo cho người dùng biết bot đang xử lý
-        msg_wait = bot.send_message(chat_id, "⏳ Đang tạo link nhiệm vụ, vui lòng đợi...")
-        
-        try:
-            res = requests.get(api_url, timeout=10).json()
-            if res.get('status') == 'success':
-                markup = InlineKeyboardMarkup()
-                markup.add(InlineKeyboardButton(f"👉 VƯỢT LINK 1/{req_links}", url=res.get('shortenedUrl')))
-                
-                # Xóa tin nhắn chờ, gửi link thật
-                bot.delete_message(chat_id, msg_wait.message_id)
-                bot.send_message(chat_id, f"Đã chọn: {prod_name}\nBấm nút dưới để làm nhiệm vụ.", reply_markup=markup)
-            else:
-                bot.edit_message_text("❌ Lỗi tạo link từ Link4M, vui lòng thử lại sau!", chat_id, msg_wait.message_id)
-                del USER_SESSIONS[chat_id]
-        except Exception as e:
-            bot.edit_message_text("❌ Lỗi kết nối mạng, vui lòng thử lại!", chat_id, msg_wait.message_id)
+        res = requests.get(api_url).json()
+        if res.get('status') == 'success':
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton(f"👉 VƯỢT LINK 1/{req_links}", url=res.get('shortenedUrl')))
+            bot.send_message(chat_id, f"Đã chọn: {prod_name}\nBấm nút dưới để làm nhiệm vụ.", reply_markup=markup)
+        else:
+            bot.send_message(chat_id, "❌ Lỗi tạo link Link4M!")
             del USER_SESSIONS[chat_id]
             
     except Exception as e:
@@ -240,7 +230,5 @@ if __name__ == '__main__':
     bot.remove_webhook()
     time.sleep(1)
     bot.set_webhook(url=f"{RENDER_URL}/{BOT_TOKEN}")
-    
     threading.Thread(target=keep_alive, daemon=True).start()
-    
     app.run(host='0.0.0.0', port=3000)
