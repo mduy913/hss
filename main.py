@@ -5,13 +5,12 @@ import random
 import string
 import threading
 import time
-import urllib.parse
 from flask import Flask, request
 
 # ================= CẤU HÌNH =================
 BOT_TOKEN = "8314558446:AAFGz92fVeLdomzfN0EeNZk-HFtDSC8hHEg"
 LINK4M_TOKEN = "699ac288bb556c3eae114a58"
-# ĐIỀN CHÍNH XÁC LINK RENDER CỦA BẠN VÀO ĐÂY (Có https://)
+# SỬA LINK RENDER CỦA BẠN VÀO ĐÂY
 RENDER_URL = "https://hss-hsha.onrender.com" 
 FIREBASE_URL = "https://shopmduy-default-rtdb.asia-southeast1.firebasedatabase.app/"
 # ============================================
@@ -20,8 +19,6 @@ bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
 ADMIN_ID = None 
-USER_SESSIONS = {} 
-OTP_CODES = {}     
 
 # --- HÀM LẤY DỮ LIỆU TỪ FIREBASE ---
 def get_products():
@@ -35,17 +32,6 @@ def save_product(prod_name, links_req):
 
 def add_acc_to_db(prod_name, user, pwd):
     requests.post(FIREBASE_URL + f"products/{prod_name}/stock.json", json={"user": user, "pass": pwd})
-
-def get_and_remove_acc(prod_name):
-    try:
-        res = requests.get(FIREBASE_URL + f"products/{prod_name}/stock.json")
-        stock = res.json()
-        if not stock: return None
-        acc_key = list(stock.keys())[0]
-        acc_data = stock[acc_key]
-        requests.delete(FIREBASE_URL + f"products/{prod_name}/stock/{acc_key}.json")
-        return acc_data
-    except: return None
 
 # --- WEBHOOK CỦA TELEGRAM ---
 @app.route(f'/{BOT_TOKEN}', methods=['POST'])
@@ -62,17 +48,19 @@ def receive_update():
 def link4m_callback(chat_id, token):
     try:
         chat_id = int(chat_id)
-        if chat_id in USER_SESSIONS:
-            session = USER_SESSIONS[chat_id]
-            session["links_done"] += 1
+        # Lấy phiên làm việc từ FireBase để không bị mất nếu Render ngủ
+        res = requests.get(FIREBASE_URL + f"sessions/{chat_id}.json")
+        session = res.json()
+        
+        if session:
+            links_done = session.get("links_done", 0) + 1
+            req_links = session.get("links_required", 1)
+            prod_name = session.get("product")
             
-            prod_name = session["product"]
-            req_links = session["links_required"]
-            
-            if session["links_done"] >= req_links:
+            if links_done >= req_links:
                 otp = ''.join(random.choices(string.digits, k=6))
-                OTP_CODES[otp] = {"chat_id": chat_id, "product": prod_name}
-                del USER_SESSIONS[chat_id]
+                requests.put(FIREBASE_URL + f"otps/{otp}.json", json={"chat_id": chat_id, "product": prod_name})
+                requests.delete(FIREBASE_URL + f"sessions/{chat_id}.json")
                 
                 msg = (f"🎉 **VƯỢT LINK THÀNH CÔNG!**\n\n"
                        f"Để nhận tài khoản, hãy gõ lệnh:\n"
@@ -80,13 +68,16 @@ def link4m_callback(chat_id, token):
                        f"*(Mã này sẽ hết hạn sau 5 phút)*")
                 bot.send_message(chat_id, msg, parse_mode='Markdown')
             else:
+                # Lưu lại tiến độ
+                requests.put(FIREBASE_URL + f"sessions/{chat_id}/links_done.json", json=links_done)
+                
                 target_url = f"{RENDER_URL}/callback/{chat_id}/{token}"
                 api_url = f"https://link4m.co/api-shorten/v2?api={LINK4M_TOKEN}&url={target_url}"
-                res = requests.get(api_url).json()
-                if res.get('status') == 'success':
+                res_link = requests.get(api_url).json()
+                if res_link.get('status') == 'success':
                     markup = InlineKeyboardMarkup()
-                    markup.add(InlineKeyboardButton(f"👉 VƯỢT LINK {session['links_done'] + 1}/{req_links}", url=res.get('shortenedUrl')))
-                    bot.send_message(chat_id, f"Vui lòng vượt thêm {req_links - session['links_done']} link nữa.", reply_markup=markup)
+                    markup.add(InlineKeyboardButton(f"👉 VƯỢT LINK {links_done + 1}/{req_links}", url=res_link.get('shortenedUrl')))
+                    bot.send_message(chat_id, f"Vui lòng vượt thêm {req_links - links_done} link nữa.", reply_markup=markup)
         return "OK", 200
     except Exception as e:
         return "Error", 500
@@ -97,31 +88,42 @@ def claim_acc(message):
     chat_id = message.chat.id
     try:
         otp = message.text.replace('/claim', '').strip()
-        if not otp or otp not in OTP_CODES:
+        
+        res = requests.get(FIREBASE_URL + f"otps/{otp}.json")
+        session = res.json()
+        
+        if not session:
             bot.reply_to(message, "❌ Mã OTP không hợp lệ hoặc đã hết hạn!")
             return
             
-        session = OTP_CODES[otp]
         if session["chat_id"] != chat_id:
             bot.reply_to(message, "❌ Bạn không phải người sở hữu mã này!")
             return
             
         prod_name = session["product"]
-        acc = get_and_remove_acc(prod_name)
         
-        if not acc:
-            del OTP_CODES[otp] 
+        # Lấy acc
+        res_acc = requests.get(FIREBASE_URL + f"products/{prod_name}/stock.json")
+        stock = res_acc.json()
+        if not stock:
+            requests.delete(FIREBASE_URL + f"otps/{otp}.json")
             error_msg = ("❌ Kho đã hết tài khoản!\n"
                          "Vui lòng vượt lại sau khi Admin up thêm acc.\n\n"
                          "Nếu bạn vượt acc trên 5 link, vui lòng liên hệ Admin @mduyk để hỗ trợ.")
             bot.reply_to(message, error_msg)
             return
             
-        del OTP_CODES[otp]
-        bot.reply_to(message, f"🎁 **TÀI KHOẢN CỦA BẠN:**\n\n`{acc['user']} | {acc['pass']}`\n\n*(Hãy copy ngay)*", parse_mode='Markdown')
+        acc_key = list(stock.keys())[0]
+        acc_data = stock[acc_key]
         
-    except Exception:
-        bot.reply_to(message, "Cú pháp: `/claim 123456`", parse_mode='Markdown')
+        # Xóa acc và OTP
+        requests.delete(FIREBASE_URL + f"products/{prod_name}/stock/{acc_key}.json")
+        requests.delete(FIREBASE_URL + f"otps/{otp}.json")
+        
+        bot.reply_to(message, f"🎁 **TÀI KHOẢN CỦA BẠN:**\n\n`{acc_data['user']} | {acc_data['pass']}`\n\n*(Hãy copy ngay)*", parse_mode='Markdown')
+        
+    except Exception as e:
+        bot.reply_to(message, f"Lỗi: {e}")
 
 # --- BOT CƠ BẢN ---
 @bot.message_handler(commands=['start'])
@@ -153,19 +155,33 @@ def send_welcome(message):
 def add_prod(message):
     if message.chat.id != ADMIN_ID: return
     try:
-        name, links = message.text.replace('/add_prod', '').strip().split('|')
-        save_product(name.strip(), int(links.strip()))
-        bot.reply_to(message, f"✅ Đã thêm SP: {name.strip()} (Cần {links.strip()} link)")
-    except: bot.reply_to(message, "VD: `/add_prod VIP | 2`", parse_mode='Markdown')
+        # Cắt chuỗi an toàn
+        parts = message.text.replace('/add_prod', '').strip().split('|')
+        if len(parts) < 2: raise Exception("Thiếu thông tin")
+        
+        name = parts[0].strip()
+        links = int(parts[1].strip())
+        
+        save_product(name, links)
+        bot.reply_to(message, f"✅ Đã thêm SP: {name} (Cần {links} link)")
+    except Exception as e: 
+        bot.reply_to(message, f"❌ Lỗi cú pháp! VD: `/add_prod VIP | 2`\nChi tiết: {e}", parse_mode='Markdown')
 
 @bot.message_handler(commands=['add_acc'])
 def add_acc(message):
     if message.chat.id != ADMIN_ID: return
     try:
-        p, u, pw = message.text.replace('/add_acc', '').strip().split('|')
-        add_acc_to_db(p.strip(), u.strip(), pw.strip())
-        bot.reply_to(message, f"✅ Đã thêm acc vào {p.strip()}")
-    except: bot.reply_to(message, "VD: `/add_acc VIP | user1 | pass1`", parse_mode='Markdown')
+        parts = message.text.replace('/add_acc', '').strip().split('|')
+        if len(parts) < 3: raise Exception("Thiếu thông tin")
+        
+        p = parts[0].strip()
+        u = parts[1].strip()
+        pw = parts[2].strip()
+        
+        add_acc_to_db(p, u, pw)
+        bot.reply_to(message, f"✅ Đã thêm acc vào {p}")
+    except Exception as e: 
+        bot.reply_to(message, f"❌ Lỗi cú pháp! VD: `/add_acc VIP | user | pass`\nChi tiết: {e}", parse_mode='Markdown')
 
 @bot.message_handler(func=lambda message: message.text == "🛒 CHỌN SẢN PHẨM")
 def list_products(message):
@@ -176,7 +192,8 @@ def list_products(message):
         
     markup = InlineKeyboardMarkup()
     for name in products:
-        # Mã hóa tên sản phẩm để tránh lỗi dấu cách
+        # Mã hóa tên để không bị lỗi dấu cách
+        import urllib.parse
         safe_name = urllib.parse.quote(name)
         markup.add(InlineKeyboardButton(f"🎁 {name}", callback_data=f"buy_{safe_name}"))
     bot.send_message(message.chat.id, "Chọn sản phẩm:", reply_markup=markup)
@@ -184,66 +201,51 @@ def list_products(message):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
 def buy_product(call):
     try:
-        # Tắt loading trên nút ngay lập tức
         bot.answer_callback_query(call.id)
         
-        # Giải mã tên sản phẩm
-        encoded_name = call.data.split('_')[1]
+        import urllib.parse
+        encoded_name = call.data.split('_', 1)[1]
         prod_name = urllib.parse.unquote(encoded_name)
         
         chat_id = call.message.chat.id
-        
-        if chat_id in USER_SESSIONS:
-             bot.send_message(chat_id, "⚠️ Bạn đang có nhiệm vụ chưa xong!")
-             return
-        
         products = get_products()
+        
         if prod_name not in products:
-             bot.send_message(chat_id, "❌ Sản phẩm không tồn tại!")
+             bot.send_message(chat_id, "❌ Sản phẩm không tồn tại trên hệ thống!")
              return
 
         token = f"MDUYK-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
         req_links = products[prod_name]["links_required"]
         
-        USER_SESSIONS[chat_id] = {"product": prod_name, "links_done": 0, "links_required": req_links}
+        # Lưu phiên lên Firebase để không bị mất khi Render ngủ
+        requests.put(FIREBASE_URL + f"sessions/{chat_id}.json", json={"product": prod_name, "links_done": 0, "links_required": req_links})
 
         target_url = f"{RENDER_URL}/callback/{chat_id}/{token}"
         api_url = f"https://link4m.co/api-shorten/v2?api={LINK4M_TOKEN}&url={target_url}"
         
-        try:
-            res = requests.get(api_url, timeout=10).json()
-            if res.get('status') == 'success':
-                markup = InlineKeyboardMarkup()
-                markup.add(InlineKeyboardButton(f"👉 VƯỢT LINK 1/{req_links}", url=res.get('shortenedUrl')))
-                bot.send_message(chat_id, f"Đã chọn: {prod_name}\nBấm nút dưới để làm nhiệm vụ.", reply_markup=markup)
-            else:
-                bot.send_message(chat_id, "❌ Lỗi tạo link từ Link4M!")
-                del USER_SESSIONS[chat_id]
-        except Exception as e:
-            bot.send_message(chat_id, "❌ Lỗi kết nối mạng, thử lại sau!")
-            del USER_SESSIONS[chat_id]
+        res = requests.get(api_url, timeout=10).json()
+        if res.get('status') == 'success':
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton(f"👉 VƯỢT LINK 1/{req_links}", url=res.get('shortenedUrl')))
+            bot.send_message(chat_id, f"Đã chọn: {prod_name}\nBấm nút dưới để làm nhiệm vụ.", reply_markup=markup)
+        else:
+            bot.send_message(chat_id, "❌ Lỗi tạo link từ Link4M!")
+            requests.delete(FIREBASE_URL + f"sessions/{chat_id}.json")
             
     except Exception as e:
-        print("Lỗi xử lý nút:", e)
+        print("Lỗi nút bấm:", e)
 
-# --- HÀM CHỐNG NGỦ (TỰ ĐỘNG PING) ---
+# --- HÀM CHỐNG NGỦ ---
 def keep_alive():
     while True:
         time.sleep(600) 
-        try:
-            requests.get(RENDER_URL)
+        try: requests.get(RENDER_URL)
         except: pass
 
 # --- KHỞI ĐỘNG ---
 if __name__ == '__main__':
-    # Xóa webhook cũ để dọn dẹp bộ nhớ đệm của Telegram
     bot.remove_webhook()
     time.sleep(1)
-    # Cài webhook mới
     bot.set_webhook(url=f"{RENDER_URL}/{BOT_TOKEN}")
-    
-    # Chạy luồng chống ngủ
     threading.Thread(target=keep_alive, daemon=True).start()
-    
-    # Chạy app
     app.run(host='0.0.0.0', port=3000)
