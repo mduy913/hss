@@ -11,7 +11,9 @@ from flask import Flask, request
 # ================= CẤU HÌNH =================
 BOT_TOKEN = "8314558446:AAFGz92fVeLdomzfN0EeNZk-HFtDSC8hHEg"
 LINK4M_TOKEN = "699ac288bb556c3eae114a58"
+# Link Render của bạn (có https://)
 RENDER_URL = "https://voice-mleh.onrender.com" 
+# Link Firebase của bạn
 FIREBASE_URL = "https://shopmduy-default-rtdb.asia-southeast1.firebasedatabase.app/"
 # ============================================
 
@@ -46,7 +48,7 @@ def get_and_remove_acc(prod_name):
         return acc_data
     except: return None
 
-# --- WEBHOOK CỦA TELEGRAM (CHỐNG DIE BOT) ---
+# --- WEBHOOK CỦA TELEGRAM ---
 @app.route(f'/{BOT_TOKEN}', methods=['POST'])
 def receive_update():
     if request.headers.get('content-type') == 'application/json':
@@ -91,7 +93,7 @@ def link4m_callback(chat_id, token):
     except Exception as e:
         return "Error", 500
 
-# --- XỬ LÝ LỆNH CLAIM ---
+# --- LỆNH CLAIM ---
 @bot.message_handler(commands=['claim'])
 def claim_acc(message):
     chat_id = message.chat.id
@@ -123,7 +125,7 @@ def claim_acc(message):
     except Exception:
         bot.reply_to(message, "Cú pháp: `/claim 123456`", parse_mode='Markdown')
 
-# --- CÁC LỆNH KHÁC ---
+# --- BOT CƠ BẢN ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     global ADMIN_ID
@@ -170,46 +172,71 @@ def add_acc(message):
 @bot.message_handler(func=lambda message: message.text == "🛒 CHỌN SẢN PHẨM")
 def list_products(message):
     products = get_products()
+    if not products: 
+        bot.send_message(message.chat.id, "Hiện tại chưa có sản phẩm nào!")
+        return
+        
     markup = InlineKeyboardMarkup()
     for name in products:
         markup.add(InlineKeyboardButton(f"🎁 {name}", callback_data=f"buy_{name}"))
-    if not products: bot.send_message(message.chat.id, "Hiện tại chưa có sản phẩm nào!")
-    else: bot.send_message(message.chat.id, "Chọn sản phẩm:", reply_markup=markup)
+    bot.send_message(message.chat.id, "Chọn sản phẩm:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
 def buy_product(call):
-    prod_name = call.data.split('_')[1]
-    chat_id = call.message.chat.id
-    if chat_id in USER_SESSIONS:
-         bot.answer_callback_query(call.id, "Bạn đang có nhiệm vụ chưa xong!", show_alert=True)
-         return
-    products = get_products()
-    if prod_name not in products:
-         bot.answer_callback_query(call.id, "Sản phẩm không tồn tại!", show_alert=True)
-         return
-
-    token = f"MDUYK-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
-    req_links = products[prod_name]["links_required"]
-    USER_SESSIONS[chat_id] = {"product": prod_name, "links_done": 0, "links_required": req_links}
-
-    target_url = f"{RENDER_URL}/callback/{chat_id}/{token}"
-    api_url = f"https://link4m.co/api-shorten/v2?api={LINK4M_TOKEN}&url={target_url}"
-    
     try:
+        prod_name = call.data.split('_')[1]
+        chat_id = call.message.chat.id
+        
+        if chat_id in USER_SESSIONS:
+             bot.answer_callback_query(call.id, "Bạn đang có nhiệm vụ chưa xong!", show_alert=True)
+             return
+        
+        products = get_products()
+        if prod_name not in products:
+             bot.answer_callback_query(call.id, "Sản phẩm không tồn tại!", show_alert=True)
+             return
+
+        token = f"MDUYK-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
+        req_links = products[prod_name]["links_required"]
+        
+        USER_SESSIONS[chat_id] = {"product": prod_name, "links_done": 0, "links_required": req_links}
+
+        target_url = f"{RENDER_URL}/callback/{chat_id}/{token}"
+        api_url = f"https://link4m.co/api-shorten/v2?api={LINK4M_TOKEN}&url={target_url}"
+        
         res = requests.get(api_url).json()
         if res.get('status') == 'success':
+            # Xóa trạng thái loading (chữ sáng sáng) trên nút bấm
+            bot.answer_callback_query(call.id, "Đang tạo link...")
+            
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton(f"👉 VƯỢT LINK 1/{req_links}", url=res.get('shortenedUrl')))
             bot.send_message(chat_id, f"Đã chọn: {prod_name}\nBấm nút dưới để làm nhiệm vụ.", reply_markup=markup)
-    except Exception as e: print("Lỗi:", e)
+        else:
+            bot.answer_callback_query(call.id, "Lỗi tạo link Link4M!", show_alert=True)
+            
+    except Exception as e:
+        print("Lỗi nút bấm:", e)
+        bot.answer_callback_query(call.id, "Đã xảy ra lỗi, vui lòng thử lại!", show_alert=True)
+
+# --- HÀM CHỐNG NGỦ (TỰ ĐỘNG PING) ---
+def keep_alive():
+    while True:
+        time.sleep(600) # 10 phút ping 1 lần
+        try:
+            requests.get(RENDER_URL)
+        except: pass
 
 # --- KHỞI ĐỘNG ---
 if __name__ == '__main__':
-    # Xóa webhook cũ
+    # Xóa webhook cũ để tránh lỗi 409
     bot.remove_webhook()
     time.sleep(1)
-    # Cài webhook mới trỏ thẳng vào Render
+    # Cài webhook mới
     bot.set_webhook(url=f"{RENDER_URL}/{BOT_TOKEN}")
     
-    # Chạy app Flask
+    # Chạy luồng chống ngủ
+    threading.Thread(target=keep_alive, daemon=True).start()
+    
+    # Chạy app
     app.run(host='0.0.0.0', port=3000)
