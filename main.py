@@ -1,17 +1,16 @@
-
 import os
 import time
-import json
-import random
+import html
+import base64
+import secrets
 import string
 import threading
 import logging
-import secrets
 
 import requests
 import telebot
 
-from flask import Flask, request, jsonify
+from flask import Flask
 from telebot.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -20,342 +19,207 @@ from telebot.types import (
 )
 
 # ==================================================
-# CONFIGURATION
+# CẤU HÌNH
 # ==================================================
 
-BOT_TOKEN = "8314558446:AAFGz92fVeLdomzfN0EeNZk-HFtDSC8hHEg"
-LINK4M_TOKEN = "699ac288bb556c3eae114a58"
-RENDER_URL = "https://voice-mleh.onrender.com" 
-FIREBASE_URL = "https://shopmduy-default-rtdb.asia-southeast1.firebasedatabase.app/"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+LINK4M_TOKEN = os.getenv("LINK4M_TOKEN", "")
+
+RENDER_URL = os.getenv(
+    "RENDER_URL",
+    "https://voice-mleh.onrender.com"
+).rstrip("/")
+
+FIREBASE_URL = os.getenv(
+    "FIREBASE_URL",
+    "https://shopmduy-default-rtdb.asia-southeast1.firebasedatabase.app"
+).rstrip("/")
+
+FIREBASE_AUTH = os.getenv("FIREBASE_AUTH", "")
+
+# Điền Telegram ID admin trong Environment của Render
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+
 OTP_EXPIRE = 300
 REQUEST_TIMEOUT = 20
 
-# ==================================================
-# INITIALIZATION
-# ==================================================
-
 if not BOT_TOKEN or not LINK4M_TOKEN:
-    raise RuntimeError("Missing BOT_TOKEN or LINK4M_TOKEN")
+    raise RuntimeError("Thiếu BOT_TOKEN hoặc LINK4M_TOKEN")
+
+if ADMIN_ID <= 0:
+    raise RuntimeError("Bạn chưa cấu hình ADMIN_ID trên Render")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
+logging.basicConfig(level=logging.INFO)
 
-log = logging.getLogger("MDUYK")
+# ==================================================
+# DỮ LIỆU
+# ==================================================
 
-ADMIN_ID = None
-
+PRODUCTS = {}
 USER_SESSIONS = {}
 OTP_CODES = {}
 
-SESSION_LOCK = threading.RLock()
-OTP_LOCK = threading.RLock()
+data_lock = threading.RLock()
+
 
 # ==================================================
 # FIREBASE
 # ==================================================
 
 def firebase_request(method, path, data=None):
-    url = FIREBASE_URL + path.lstrip("/") + ".json"
+    url = f"{FIREBASE_URL}/{path}.json"
+
+    params = {}
+    if FIREBASE_AUTH:
+        params["auth"] = FIREBASE_AUTH
 
     response = requests.request(
-        method,
-        url,
+        method=method,
+        url=url,
+        params=params,
         json=data,
         timeout=REQUEST_TIMEOUT
     )
 
     response.raise_for_status()
 
-    if not response.text:
-        return None
+    if response.text:
+        return response.json()
 
-    return response.json()
-
-
-def get_products():
-    try:
-        return firebase_request("GET", "products") or {}
-    except Exception:
-        log.exception("GET PRODUCTS ERROR")
-        return {}
+    return None
 
 
-def get_admin():
-    try:
-        return firebase_request("GET", "admin_id")
-    except Exception:
-        log.exception("GET ADMIN ERROR")
-        return None
+def firebase_save(path, data):
+    return firebase_request("PUT", path, data)
 
+
+def firebase_delete(path):
+    return firebase_request("DELETE", path)
+
+
+def firebase_load(path):
+    return firebase_request("GET", path)
+
+
+def load_database():
+    """Tải toàn bộ dữ liệu đã lưu từ Firebase."""
+
+    global PRODUCTS, USER_SESSIONS, OTP_CODES
+
+    with data_lock:
+        PRODUCTS = firebase_load("products") or {}
+        USER_SESSIONS = firebase_load("sessions") or {}
+        OTP_CODES = firebase_load("otp_codes") or {}
+
+    logging.info("Đã tải dữ liệu từ Firebase")
+    logging.info("Số sản phẩm: %s", len(PRODUCTS))
+    logging.info("Số phiên: %s", len(USER_SESSIONS))
+    logging.info("Số OTP: %s", len(OTP_CODES))
+
+
+def save_product(product_id):
+    firebase_save(
+        f"products/{product_id}",
+        PRODUCTS[product_id]
+    )
+
+
+# ==================================================
+# HÀM HỖ TRỢ
+# ==================================================
 
 def is_admin(user_id):
-    global ADMIN_ID
-
-    if ADMIN_ID is None:
-        ADMIN_ID = get_admin()
-
-    return str(user_id) == str(ADMIN_ID)
+    return int(user_id) == ADMIN_ID
 
 
-def save_product(name, links):
-    if not name or "/" in name or "." in name or "#" in name:
-        raise ValueError("Tên sản phẩm không hợp lệ")
+def make_id():
+    return secrets.token_urlsafe(6)
 
-    firebase_request(
-        "PATCH",
-        f"products/{name}",
-        {
-            "links_required": links
-        }
+
+def make_callback_token():
+    return secrets.token_urlsafe(24)
+
+
+def get_product_by_name(name):
+    for product_id, product in PRODUCTS.items():
+        if product.get("name") == name:
+            return product_id, product
+
+    return None, None
+
+
+def create_short_link(chat_id):
+    """Tạo link Link4M cho phiên hiện tại."""
+
+    chat_key = str(chat_id)
+
+    with data_lock:
+        session = USER_SESSIONS.get(chat_key)
+
+        if not session:
+            return None
+
+        token = make_callback_token()
+        session["expected_token"] = token
+
+        firebase_save(f"sessions/{chat_key}", session)
+
+    target_url = (
+        f"{RENDER_URL}/callback/{chat_id}/{token}"
     )
 
-
-def add_acc_to_db(name, username, password):
-    firebase_request(
-        "POST",
-        f"products/{name}/stock",
-        {
-            "user": username,
-            "pass": password
-        }
-    )
-
-
-def get_stock_count(name):
-    stock = firebase_request(
-        "GET",
-        f"products/{name}/stock"
-    )
-
-    return len(stock) if isinstance(stock, dict) else 0
-
-
-def get_and_remove_acc(name):
-    """
-    Đọc và xóa tài khoản bằng ETag để tránh
-    hai người nhận cùng một tài khoản.
-    """
-    url = FIREBASE_URL + f"products/{name}/stock.json"
+    api_url = "https://link4m.co/api-shorten/v2"
 
     response = requests.get(
-        url,
-        headers={"X-Firebase-ETag": "true"},
+        api_url,
+        params={
+            "api": LINK4M_TOKEN,
+            "url": target_url
+        },
         timeout=REQUEST_TIMEOUT
     )
 
     response.raise_for_status()
+    result = response.json()
 
-    stock = response.json()
-
-    if not isinstance(stock, dict) or not stock:
-        return None
-
-    key = next(iter(stock))
-    acc = stock[key]
-    etag = response.headers.get("ETag")
-
-    if not etag:
-        raise RuntimeError("Firebase không trả ETag")
-
-    delete_response = requests.delete(
-        url,
-        params={"print": "silent"},
-        headers={"If-Match": etag},
-        timeout=REQUEST_TIMEOUT
-    )
-
-    if delete_response.status_code == 412:
-        return None
-
-    delete_response.raise_for_status()
-
-    return acc
-
-
-# ==================================================
-# LINK4M
-# ==================================================
-
-def create_short_link(target_url):
-    try:
-        response = requests.get(
-            "https://link4m.co/api-shorten/v2",
-            params={
-                "api": LINK4M_TOKEN,
-                "url": target_url
-            },
-            timeout=REQUEST_TIMEOUT
+    if result.get("status") != "success":
+        raise RuntimeError(
+            result.get("message", "Không tạo được link")
         )
 
-        response.raise_for_status()
+    short_url = result.get("shortenedUrl")
 
-        data = response.json()
+    if not short_url:
+        raise RuntimeError("Link4M không trả về shortenedUrl")
 
-        log.info("LINK4M STATUS: %s", data.get("status"))
-
-        if data.get("status") != "success":
-            log.error("LINK4M ERROR: %s", data)
-            return None
-
-        short_url = data.get("shortenedUrl")
-
-        if not isinstance(short_url, str):
-            return None
-
-        if not short_url.startswith("https://"):
-            return None
-
-        return short_url
-
-    except Exception:
-        log.exception("CREATE SHORT LINK ERROR")
-        return None
+    return short_url
 
 
-# ==================================================
-# SESSION
-# ==================================================
-
-def create_session(chat_id, product):
-    token = secrets.token_urlsafe(24)
-
-    session = {
-        "product": product,
-        "links_done": 0,
-        "links_required": 0,
-        "token": token
-    }
-
-    with SESSION_LOCK:
-        USER_SESSIONS[chat_id] = session
-
-    return token
-
-
-def clear_session(chat_id):
-    with SESSION_LOCK:
-        USER_SESSIONS.pop(chat_id, None)
-
-
-def create_otp(chat_id, product):
-    otp = ''.join(
-        random.choices(string.digits, k=6)
-    )
-
-    with OTP_LOCK:
-        while otp in OTP_CODES:
-            otp = ''.join(
-                random.choices(string.digits, k=6)
-            )
-
-        OTP_CODES[otp] = {
-            "chat_id": chat_id,
-            "product": product,
-            "expires": time.time() + OTP_EXPIRE
-        }
-
-    return otp
-
-
-# ==================================================
-# WEBHOOK TELEGRAM
-# ==================================================
-
-@app.route(f"/{BOT_TOKEN}", methods=["POST"])
-def receive_update():
+def send_task_link(chat_id):
     try:
-        if not request.is_json:
-            return "Invalid content", 403
-
-        update = telebot.types.Update.de_json(
-            request.get_json()
-        )
-
-        bot.process_new_updates([update])
-
-        return "OK", 200
-
-    except Exception:
-        log.exception("TELEGRAM WEBHOOK ERROR")
-        return "ERROR", 500
-
-
-@app.route("/", methods=["GET"])
-def home():
-    return jsonify({
-        "status": "online",
-        "bot": "MDUYK"
-    })
-
-
-# ==================================================
-# LINK4M CALLBACK
-# ==================================================
-
-@app.route(
-    "/callback/<int:chat_id>/<token>",
-    methods=["GET"]
-)
-def link4m_callback(chat_id, token):
-
-    with SESSION_LOCK:
-        session = USER_SESSIONS.get(chat_id)
-
-        if not session:
-            return "Session expired", 404
-
-        if not secrets.compare_digest(
-            str(session["token"]),
-            str(token)
-        ):
-            return "Invalid token", 403
-
-        session["links_done"] += 1
-
-        done = session["links_done"]
-        required = session["links_required"]
-        product = session["product"]
-
-    try:
-        if done >= required:
-
-            otp = create_otp(chat_id, product)
-            clear_session(chat_id)
-
-            bot.send_message(
-                chat_id,
-                "🎉 VƯỢT LINK THÀNH CÔNG!\n\n"
-                f"Sản phẩm: {product}\n"
-                f"OTP: {otp}\n\n"
-                "Sử dụng lệnh:\n"
-                f"/claim {otp}\n\n"
-                "OTP có hiệu lực trong 5 phút."
-            )
-
-            return "Completed", 200
-
-        with SESSION_LOCK:
-            current = USER_SESSIONS.get(chat_id)
-
-        if not current:
-            return "Session expired", 404
-
-        target_url = (
-            f"{RENDER_URL}/callback/{chat_id}/{token}"
-        )
-
-        short_url = create_short_link(target_url)
+        short_url = create_short_link(chat_id)
 
         if not short_url:
-            return "Link creation failed", 503
+            return False
+
+        chat_key = str(chat_id)
+        session = USER_SESSIONS.get(chat_key)
+
+        if not session:
+            return False
+
+        product = PRODUCTS.get(session["product_id"])
+
+        if not product:
+            return False
+
+        done = int(session.get("links_done", 0))
+        required = int(product["links_required"])
 
         markup = InlineKeyboardMarkup()
-
         markup.add(
             InlineKeyboardButton(
                 f"👉 VƯỢT LINK {done + 1}/{required}",
@@ -365,16 +229,208 @@ def link4m_callback(chat_id, token):
 
         bot.send_message(
             chat_id,
-            f"✅ Đã hoàn thành {done}/{required} link!\n"
-            f"Còn {required - done} link.",
+            f"Đã chọn: {product['name']}\n"
+            f"Bấm nút bên dưới để tiếp tục nhiệm vụ.",
             reply_markup=markup
         )
 
-        return "OK", 200
+        return True
+
+    except Exception as error:
+        logging.exception("Lỗi tạo link: %s", error)
+        return False
+
+
+# ==================================================
+# CALLBACK LINK4M
+# ==================================================
+
+@app.route("/callback/<chat_id>/<token>", methods=["GET"])
+def link4m_callback(chat_id, token):
+
+    try:
+        chat_id = int(chat_id)
+        chat_key = str(chat_id)
+
+        with data_lock:
+            session = USER_SESSIONS.get(chat_key)
+
+            if not session:
+                return "Phiên không tồn tại hoặc đã hoàn thành", 404
+
+            expected = session.get("expected_token", "")
+
+            # Chặn callback dùng lại token cũ
+            if not expected or not secrets.compare_digest(
+                str(expected),
+                str(token)
+            ):
+                return "Token không hợp lệ hoặc đã được sử dụng", 403
+
+            product_id = session.get("product_id")
+            product = PRODUCTS.get(product_id)
+
+            if not product:
+                return "Sản phẩm không tồn tại", 404
+
+            # Vô hiệu token vừa sử dụng
+            session["expected_token"] = ""
+
+            session["links_done"] = (
+                int(session.get("links_done", 0)) + 1
+            )
+
+            done = session["links_done"]
+            required = int(product["links_required"])
+
+            if done >= required:
+                del USER_SESSIONS[chat_key]
+                firebase_delete(f"sessions/{chat_key}")
+
+                otp = "".join(
+                    secrets.choice(string.digits)
+                    for _ in range(6)
+                )
+
+                while otp in OTP_CODES:
+                    otp = "".join(
+                        secrets.choice(string.digits)
+                        for _ in range(6)
+                    )
+
+                otp_data = {
+                    "chat_id": chat_id,
+                    "product_id": product_id,
+                    "expires_at": int(time.time()) + OTP_EXPIRE
+                }
+
+                OTP_CODES[otp] = otp_data
+                firebase_save(f"otp_codes/{otp}", otp_data)
+
+                completed = True
+
+            else:
+                firebase_save(
+                    f"sessions/{chat_key}",
+                    session
+                )
+                completed = False
+
+        if completed:
+            bot.send_message(
+                chat_id,
+                "🎉 VƯỢT LINK THÀNH CÔNG!\n\n"
+                f"Mã nhận tài khoản của bạn:\n"
+                f"/claim {otp}\n\n"
+                "Mã có hiệu lực trong 5 phút và chỉ dùng một lần."
+            )
+
+            return "Hoàn thành nhiệm vụ!", 200
+
+        bot.send_message(
+            chat_id,
+            f"Đã hoàn thành {done}/{required} link."
+        )
+
+        if not send_task_link(chat_id):
+            bot.send_message(
+                chat_id,
+                "Không tạo được link tiếp theo. "
+                "Vui lòng liên hệ admin."
+            )
+
+        return "Đã ghi nhận lượt vượt link", 200
 
     except Exception:
-        log.exception("LINK CALLBACK ERROR")
-        return "ERROR", 500
+        logging.exception("Lỗi callback Link4M")
+        return "Lỗi máy chủ", 500
+
+
+# ==================================================
+# LỆNH CLAIM
+# ==================================================
+
+@bot.message_handler(commands=["claim"])
+def claim_acc(message):
+
+    chat_id = message.chat.id
+
+    parts = message.text.split(maxsplit=1)
+
+    if len(parts) < 2:
+        bot.reply_to(message, "Cú pháp: /claim 123456")
+        return
+
+    otp = parts[1].strip()
+
+    with data_lock:
+        otp_data = OTP_CODES.get(otp)
+
+        if not otp_data:
+            bot.reply_to(
+                message,
+                "❌ Mã OTP không hợp lệ hoặc đã được sử dụng!"
+            )
+            return
+
+        if int(otp_data["chat_id"]) != chat_id:
+            bot.reply_to(
+                message,
+                "❌ Bạn không phải người sở hữu mã này!"
+            )
+            return
+
+        if int(otp_data["expires_at"]) < int(time.time()):
+            del OTP_CODES[otp]
+            firebase_delete(f"otp_codes/{otp}")
+
+            bot.reply_to(
+                message,
+                "❌ Mã OTP đã hết hạn!"
+            )
+            return
+
+        product_id = otp_data["product_id"]
+        product = PRODUCTS.get(product_id)
+
+        if not product or not product.get("stock"):
+            bot.reply_to(
+                message,
+                "❌ Sản phẩm hiện đã hết hàng!"
+            )
+            return
+
+        # Lấy tài khoản đầu tiên trong kho
+        account = product["stock"].pop(0)
+
+        # Lưu kho mới trước khi gửi tài khoản
+        try:
+            save_product(product_id)
+
+            del OTP_CODES[otp]
+            firebase_delete(f"otp_codes/{otp}")
+
+        except Exception:
+            # Khôi phục tài khoản nếu Firebase lỗi
+            product["stock"].insert(0, account)
+
+            bot.reply_to(
+                message,
+                "Máy chủ đang gặp lỗi lưu dữ liệu. "
+                "Vui lòng thử lại sau."
+            )
+            return
+
+    username = html.escape(str(account.get("user", "")))
+    password = html.escape(str(account.get("pass", "")))
+
+    bot.send_message(
+        chat_id,
+        "🎁 <b>TÀI KHOẢN CỦA BẠN</b>\n\n"
+        f"<code>{username} | {password}</code>\n\n"
+        "Hãy lưu lại thông tin tài khoản.",
+        parse_mode="HTML"
+    )
 
 
 # ==================================================
@@ -384,61 +440,23 @@ def link4m_callback(chat_id, token):
 @bot.message_handler(commands=["start"])
 def send_welcome(message):
 
-    global ADMIN_ID
-
     chat_id = message.chat.id
-
-    saved_admin = get_admin()
-
-    if saved_admin is None:
-
-        try:
-            firebase_request(
-                "PUT",
-                "admin_id",
-                chat_id
-            )
-
-            ADMIN_ID = chat_id
-
-            bot.send_message(
-                chat_id,
-                "👑 Bạn là ADMIN đầu tiên!\n"
-                "Dùng /admin để xem quyền."
-            )
-
-        except Exception:
-            log.exception("ADMIN INITIALIZATION ERROR")
-
-            bot.send_message(
-                chat_id,
-                "Không thể khởi tạo Admin."
-            )
-
-        return
-
-    ADMIN_ID = saved_admin
 
     if is_admin(chat_id):
         bot.send_message(
             chat_id,
-            "👑 CHÀO ADMIN MDUYK!\n"
-            "Dùng /admin để xem chức năng."
+            "👑 Chào Admin!\nDùng /admin để xem quyền."
         )
         return
 
-    markup = ReplyKeyboardMarkup(
-        resize_keyboard=True
-    )
-
+    markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(
         KeyboardButton("🛒 CHỌN SẢN PHẨM")
     )
 
     bot.send_message(
         chat_id,
-        "🎁 CHÀO MỪNG ĐẾN VỚI MDUYK SHOP!\n\n"
-        "Bấm nút bên dưới để chọn sản phẩm.",
+        "Chào mừng!\nBấm nút bên dưới để chọn sản phẩm.",
         reply_markup=markup
     )
 
@@ -453,14 +471,14 @@ def admin_panel(message):
     if not is_admin(message.chat.id):
         return
 
-    bot.send_message(
-        message.chat.id,
-        "👑 ADMIN MDUYK\n\n"
-        "/add_prod Tên SP | số link\n"
-        "/add_acc Tên SP | user | pass\n"
-        "/products - Danh sách sản phẩm\n"
-        "/stock - Kiểm tra kho"
+    text = (
+        "👑 QUYỀN ADMIN\n\n"
+        "/add_prod TênSP | SốLink\n"
+        "/add_acc TênSP | user | pass\n"
+        "/kho\n"
     )
+
+    bot.send_message(message.chat.id, text)
 
 
 @bot.message_handler(commands=["add_prod"])
@@ -470,31 +488,43 @@ def add_prod(message):
         return
 
     try:
-        raw = message.text.partition(" ")[2]
-
-        name, links = raw.rsplit("|", 1)
+        content = message.text.split(maxsplit=1)[1]
+        name, links = content.split("|", 1)
 
         name = name.strip()
         links = int(links.strip())
 
-        if links < 1 or links > 20:
-            raise ValueError("Số link từ 1 đến 20")
+        if not name or links < 1:
+            raise ValueError("Thông tin không hợp lệ")
 
-        save_product(name, links)
+        with data_lock:
+            product_id, product = get_product_by_name(name)
+
+            if product:
+                product["links_required"] = links
+            else:
+                product_id = make_id()
+
+                PRODUCTS[product_id] = {
+                    "name": name,
+                    "links_required": links,
+                    "stock": []
+                }
+
+            save_product(product_id)
 
         bot.reply_to(
             message,
-            f"✅ Đã thêm sản phẩm: {name}\n"
-            f"Số link: {links}"
+            f"✅ Đã lưu sản phẩm: {name}\n"
+            f"Số link yêu cầu: {links}"
         )
 
-    except Exception as e:
+    except Exception as error:
+        logging.exception("Lỗi add_prod")
 
         bot.reply_to(
             message,
-            "❌ Không thể thêm sản phẩm.\n"
-            "Ví dụ: /add_prod VIP | 2\n"
-            f"Lỗi: {str(e)}"
+            "Cú pháp:\n/add_prod VIP | 2"
         )
 
 
@@ -505,185 +535,73 @@ def add_acc(message):
         return
 
     try:
-        raw = message.text.partition(" ")[2]
+        content = message.text.split(maxsplit=1)[1]
+        product_name, username, password = content.split("|", 2)
 
-        name, username, password = raw.split("|", 2)
+        product_name = product_name.strip()
 
-        name = name.strip()
-        username = username.strip()
-        password = password.strip()
-
-        products = get_products()
-
-        if name not in products:
-            raise ValueError("Sản phẩm không tồn tại")
-
-        if not username or not password:
-            raise ValueError("Thiếu username hoặc password")
-
-        add_acc_to_db(
-            name,
-            username,
-            password
-        )
-
-        bot.reply_to(
-            message,
-            f"✅ Đã thêm tài khoản vào {name}"
-        )
-
-    except Exception as e:
-
-        bot.reply_to(
-            message,
-            "❌ Lỗi thêm tài khoản.\n"
-            "Ví dụ: /add_acc VIP | user1 | pass1\n"
-            f"Lỗi: {str(e)}"
-        )
-
-
-@bot.message_handler(commands=["products"])
-def admin_products(message):
-
-    if not is_admin(message.chat.id):
-        return
-
-    products = get_products()
-
-    if not products:
-        bot.send_message(
-            message.chat.id,
-            "Chưa có sản phẩm."
-        )
-        return
-
-    lines = ["📦 DANH SÁCH SẢN PHẨM"]
-
-    for name, data in products.items():
-
-        links = data.get("links_required", 0)
-
-        lines.append(
-            f"\n🎁 {name}\n"
-            f"Link cần vượt: {links}"
-        )
-
-    bot.send_message(
-        message.chat.id,
-        "\n".join(lines)
-    )
-
-
-@bot.message_handler(commands=["stock"])
-def admin_stock(message):
-
-    if not is_admin(message.chat.id):
-        return
-
-    products = get_products()
-
-    lines = ["📦 KHO TÀI KHOẢN"]
-
-    for name in products:
-
-        try:
-            count = get_stock_count(name)
-
-            lines.append(
-                f"\n{name}: {count} tài khoản"
+        with data_lock:
+            product_id, product = get_product_by_name(
+                product_name
             )
 
-        except Exception:
-            lines.append(
-                f"\n{name}: Không thể kiểm tra"
-            )
+            if not product:
+                bot.reply_to(
+                    message,
+                    "❌ Sản phẩm không tồn tại!"
+                )
+                return
 
-    bot.send_message(
-        message.chat.id,
-        "\n".join(lines)
-    )
+            product["stock"].append({
+                "user": username.strip(),
+                "pass": password.strip()
+            })
 
-
-# ==================================================
-# CLAIM
-# ==================================================
-
-@bot.message_handler(commands=["claim"])
-def claim_acc(message):
-
-    chat_id = message.chat.id
-
-    try:
-        otp = message.text.partition(" ")[2].strip()
-
-        if not otp:
-            raise ValueError("Thiếu OTP")
-
-        with OTP_LOCK:
-            session = OTP_CODES.get(otp)
-
-            if not session:
-                raise ValueError("OTP không hợp lệ")
-
-            if session["chat_id"] != chat_id:
-                raise PermissionError("OTP không thuộc về bạn")
-
-            if time.time() > session["expires"]:
-                del OTP_CODES[otp]
-                raise TimeoutError("OTP đã hết hạn")
-
-            # Đánh dấu đang xử lý để tránh claim đồng thời
-            del OTP_CODES[otp]
-
-        product = session["product"]
-
-        acc = get_and_remove_acc(product)
-
-        if not acc:
-            bot.reply_to(
-                message,
-                "❌ Kho đã hết tài khoản!\n"
-                "Vui lòng liên hệ Admin."
-            )
-            return
+            save_product(product_id)
 
         bot.reply_to(
             message,
-            "🎁 TÀI KHOẢN CỦA BẠN:\n\n"
-            f"{acc.get('user', '')} | "
-            f"{acc.get('pass', '')}\n\n"
-            "Cảm ơn bạn đã sử dụng MDUYK SHOP!"
-        )
-
-    except PermissionError:
-        bot.reply_to(
-            message,
-            "❌ OTP không thuộc về bạn."
-        )
-
-    except TimeoutError:
-        bot.reply_to(
-            message,
-            "❌ OTP đã hết hạn."
-        )
-
-    except ValueError:
-        bot.reply_to(
-            message,
-            "❌ OTP không hợp lệ hoặc đã sử dụng."
+            f"✅ Đã thêm tài khoản vào {product_name}"
         )
 
     except Exception:
-        log.exception("CLAIM ERROR")
-
         bot.reply_to(
             message,
-            "❌ Lỗi nhận tài khoản. Liên hệ Admin."
+            "Cú pháp:\n/add_acc VIP | user1 | pass1"
         )
 
 
+@bot.message_handler(commands=["kho"])
+def kho(message):
+
+    if not is_admin(message.chat.id):
+        return
+
+    with data_lock:
+        if not PRODUCTS:
+            bot.send_message(
+                message.chat.id,
+                "Kho hiện chưa có sản phẩm."
+            )
+            return
+
+        lines = ["📦 TỒN KHO"]
+
+        for product in PRODUCTS.values():
+            lines.append(
+                f"- {product['name']}: "
+                f"{len(product.get('stock', []))} acc "
+                f"(Cần {product['links_required']} link)"
+            )
+
+    bot.send_message(
+        message.chat.id,
+        "\n".join(lines)
+    )
+
+
 # ==================================================
-# PRODUCT LIST
+# CHỌN SẢN PHẨM
 # ==================================================
 
 @bot.message_handler(
@@ -691,207 +609,130 @@ def claim_acc(message):
 )
 def list_products(message):
 
-    products = get_products()
+    with data_lock:
+        products = list(PRODUCTS.items())
 
     if not products:
         bot.send_message(
             message.chat.id,
-            "Hiện tại chưa có sản phẩm nào!"
+            "Hiện chưa có sản phẩm."
         )
         return
 
     markup = InlineKeyboardMarkup()
 
-    for name in products:
-
+    for product_id, product in products:
         markup.add(
             InlineKeyboardButton(
-                f"🎁 {name}",
-                callback_data=f"buy_{name}"
+                f"🎁 {product['name']}",
+                callback_data=f"buy_{product_id}"
             )
         )
 
     bot.send_message(
         message.chat.id,
-        "🎁 VUI LÒNG CHỌN SẢN PHẨM:",
+        "Chọn sản phẩm:",
         reply_markup=markup
     )
 
-
-# ==================================================
-# BUY PRODUCT
-# ==================================================
 
 @bot.callback_query_handler(
     func=lambda call: call.data.startswith("buy_")
 )
 def buy_product(call):
 
+    product_id = call.data[4:]
     chat_id = call.message.chat.id
+    chat_key = str(chat_id)
 
-    try:
-        bot.answer_callback_query(
-            call.id,
-            "Đang tạo link..."
-        )
-
-        product = call.data.partition("_")[2]
-
-        with SESSION_LOCK:
-            if chat_id in USER_SESSIONS:
-                bot.send_message(
-                    chat_id,
-                    "⚠️ Bạn đang có nhiệm vụ chưa hoàn thành!"
-                )
-                return
-
-        products = get_products()
-
-        if product not in products:
-            bot.send_message(
-                chat_id,
-                "❌ Sản phẩm không tồn tại!"
+    with data_lock:
+        if chat_key in USER_SESSIONS:
+            bot.answer_callback_query(
+                call.id,
+                "Bạn đang có nhiệm vụ chưa hoàn thành!",
+                show_alert=True
             )
             return
 
-        links = int(
-            products[product].get("links_required", 0)
-        )
+        product = PRODUCTS.get(product_id)
 
-        if links < 1:
-            bot.send_message(
-                chat_id,
-                "❌ Sản phẩm chưa cấu hình link!"
+        if not product or not product.get("stock"):
+            bot.answer_callback_query(
+                call.id,
+                "Sản phẩm đã hết hàng!",
+                show_alert=True
             )
             return
 
-        if get_stock_count(product) < 1:
-            bot.send_message(
-                chat_id,
-                "❌ Sản phẩm hiện đã hết hàng!"
+        session = {
+            "product_id": product_id,
+            "links_done": 0,
+            "expected_token": ""
+        }
+
+        USER_SESSIONS[chat_key] = session
+
+        try:
+            firebase_save(
+                f"sessions/{chat_key}",
+                session
+            )
+
+        except Exception:
+            del USER_SESSIONS[chat_key]
+
+            bot.answer_callback_query(
+                call.id,
+                "Không lưu được phiên. Hãy thử lại sau.",
+                show_alert=True
             )
             return
 
-        token = secrets.token_urlsafe(24)
+    bot.answer_callback_query(call.id)
 
-        target_url = (
-            f"{RENDER_URL}/callback/{chat_id}/{token}"
-        )
-
-        short_url = create_short_link(target_url)
-
-        if not short_url:
-            bot.send_message(
-                chat_id,
-                "❌ Link4M không thể tạo link!\n"
-                "Vui lòng thử lại sau."
-            )
-            return
-
-        with SESSION_LOCK:
-
-            if chat_id in USER_SESSIONS:
-                bot.send_message(
-                    chat_id,
-                    "Bạn đã có nhiệm vụ đang chạy."
-                )
-                return
-
-            USER_SESSIONS[chat_id] = {
-                "product": product,
-                "links_done": 0,
-                "links_required": links,
-                "token": token
-            }
-
-        markup = InlineKeyboardMarkup()
-
-        markup.add(
-            InlineKeyboardButton(
-                f"👉 VƯỢT LINK 1/{links}",
-                url=short_url
-            )
-        )
+    if not send_task_link(chat_id):
+        with data_lock:
+            USER_SESSIONS.pop(chat_key, None)
+            firebase_delete(f"sessions/{chat_key}")
 
         bot.send_message(
             chat_id,
-            f"🎁 SẢN PHẨM: {product}\n\n"
-            f"🔗 Tổng link: {links}\n"
-            "✅ Tiến độ: 0/{0}".format(links) +
-            "\n\nBấm nút dưới để bắt đầu.",
-            reply_markup=markup
-        )
-
-        log.info(
-            "BUY SUCCESS user=%s product=%s",
-            chat_id,
-            product
-        )
-
-    except Exception:
-
-        log.exception("BUY PRODUCT ERROR")
-
-        clear_session(chat_id)
-
-        bot.send_message(
-            chat_id,
-            "❌ Có lỗi khi tạo link. Vui lòng thử lại."
+            "❌ Không tạo được link. Vui lòng thử lại sau."
         )
 
 
 # ==================================================
-# CLEAN EXPIRED OTP
+# FLASK + TELEGRAM
 # ==================================================
 
-def cleanup_expired_otp():
-
-    while True:
-
-        time.sleep(30)
-
-        now = time.time()
-
-        with OTP_LOCK:
-
-            expired = [
-                otp
-                for otp, data in OTP_CODES.items()
-                if now > data["expires"]
-            ]
-
-            for otp in expired:
-                del OTP_CODES[otp]
+@app.route("/", methods=["GET"])
+def home():
+    return "MDUYK BOT SERVER RUNNING", 200
 
 
-# ==================================================
-# START SERVER
-# ==================================================
-
-def start_bot():
-
-    bot.remove_webhook()
-
-    time.sleep(2)
-
-    bot.set_webhook(
-        url=f"{RENDER_URL}/{BOT_TOKEN}"
+def run_bot():
+    logging.info("Telegram bot đang chạy...")
+    bot.infinity_polling(
+        skip_pending=True,
+        timeout=30,
+        long_polling_timeout=30
     )
-
-    log.info("Telegram webhook configured")
 
 
 if __name__ == "__main__":
 
-    threading.Thread(
-        target=cleanup_expired_otp,
-        daemon=True
-    ).start()
+    # Tải dữ liệu trước khi chạy bot
+    load_database()
 
-    start_bot()
+    thread = threading.Thread(
+        target=run_bot,
+        daemon=True
+    )
+    thread.start()
+
+    port = int(os.getenv("PORT", "3000"))
 
     app.run(
         host="0.0.0.0",
-        port=int(os.getenv("PORT", "3000")),
-        debug=False
+        port=port
     )
