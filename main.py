@@ -36,9 +36,7 @@ def reset_daily_history():
         now = datetime.now()
         tomorrow = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
         seconds_until_midnight = (tomorrow - now).total_seconds()
-        
         time.sleep(seconds_until_midnight) 
-        
         try:
             requests.delete(FIREBASE_URL + "history.json")
             print("-> Đã reset toàn bộ lịch sử lấy acc lúc 00:00")
@@ -163,8 +161,17 @@ def handle_admin_actions(call):
         bot.register_next_step_handler(msg, process_add_prod_name)
 
     elif call.data == "admin_add_acc":
-        msg = bot.send_message(call.message.chat.id, "Nhập tên sản phẩm muốn thêm Acc:", reply_markup=ForceReply(selective=True))
-        bot.register_next_step_handler(msg, process_add_acc_prod)
+        # HIỂN THỊ DANH SÁCH SẢN PHẨM BẰNG NÚT BẤM
+        products = get_products()
+        if not products:
+            bot.edit_message_text("Kho đang trống, chưa có sản phẩm nào!", call.message.chat.id, call.message.message_id, reply_markup=back_button())
+            return
+        markup = InlineKeyboardMarkup()
+        for key, data in products.items():
+            name = data.get("name", key)
+            markup.add(InlineKeyboardButton(f"➕ {name}", callback_data=f"admin_select_acc_{key}"))
+        markup.add(InlineKeyboardButton("🔙 Quay Lại", callback_data="admin_back"))
+        bot.edit_message_text("Bấm chọn sản phẩm muốn thêm Acc:", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
     elif call.data == "admin_view_stock":
         products = get_products()
@@ -191,6 +198,14 @@ def handle_admin_actions(call):
         markup.add(InlineKeyboardButton("🔙 Quay Lại", callback_data="admin_back"))
         bot.edit_message_text("Chọn sản phẩm muốn chỉnh sửa:", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
+    elif call.data.startswith('admin_select_acc_'):
+        prod_id = call.data.split('_', 3)[3]
+        products = get_products()
+        prod_name = products[prod_id].get("name", prod_id)
+        
+        msg = bot.send_message(call.message.chat.id, f"Nhập danh sách acc cho `{prod_name}` (Mỗi dòng: user | pass):", reply_markup=ForceReply(selective=True), parse_mode='Markdown')
+        bot.register_next_step_handler(msg, process_add_acc_data, prod_id, prod_name)
+
     elif call.data.startswith('admin_edit_prod_'):
         prod_id = call.data.split('_', 3)[3]
         products = get_products()
@@ -206,7 +221,7 @@ def handle_admin_actions(call):
         msg = bot.send_message(call.message.chat.id, text, reply_markup=ForceReply(selective=True), parse_mode='Markdown')
         bot.register_next_step_handler(msg, process_edit_prod_settings, prod_id, name)
 
-# Luồng xử lý Admin
+# Luồng xử lý Admin (Không cần gõ ID/Tên)
 def process_add_prod_name(message):
     name = message.text.strip()
     msg = bot.send_message(message.chat.id, f"Đã chọn: {name}\nNhập số link cần vượt (VD: 1):", reply_markup=ForceReply(selective=True))
@@ -241,21 +256,6 @@ def process_edit_prod_settings(message, prod_id, name):
         bot.send_message(message.chat.id, f"✅ Đã cập nhật **{name}**: Vượt {links} link, Tối đa {max_claims} lần/ngày.", parse_mode='Markdown', reply_markup=admin_main_menu())
     except:
         bot.send_message(message.chat.id, "❌ Sai định dạng.", reply_markup=admin_main_menu())
-
-def process_add_acc_prod(message):
-    prod_name = message.text.strip()
-    products = get_products()
-    prod_id = None
-    for key, data in products.items():
-        if data.get("name") == prod_name:
-            prod_id = key
-            break
-            
-    if not prod_id:
-        bot.send_message(message.chat.id, f"❌ Sản phẩm `{prod_name}` không tồn tại.", parse_mode='Markdown', reply_markup=admin_main_menu())
-        return
-    msg = bot.send_message(message.chat.id, f"Nhập danh sách acc cho `{prod_name}` (Mỗi dòng: user | pass):", reply_markup=ForceReply(selective=True), parse_mode='Markdown')
-    bot.register_next_step_handler(msg, process_add_acc_data, prod_id, prod_name)
 
 def process_add_acc_data(message, prod_id, prod_name):
     lines = message.text.strip().split('\n')
@@ -321,7 +321,7 @@ def buy_product(call):
     except Exception as e:
         print("Lỗi nút bấm:", e)
 
-# ================= NHẬN MÃ OTP (ĐẾM KỂ CẢ KHI HẾT HÀNG) =================
+# ================= NHẬN MÃ OTP =================
 @bot.message_handler(commands=['claim'])
 def claim_acc(message):
     chat_id = message.chat.id
@@ -348,7 +348,6 @@ def claim_acc(message):
             
         max_claims = prod_data.get("max_claims", 1)
         
-        # KIỂM TRA LẠI LẦN NỮA
         today = get_today()
         history_res = requests.get(FIREBASE_URL + f"history/{chat_id}/{prod_id}/{today}.json")
         data_hist = history_res.json()
@@ -361,9 +360,8 @@ def claim_acc(message):
             
         # TÍNH 1 LƯỢT VƯỢT KỂ CẢ KHI KHO HẾT HÀNG
         requests.put(FIREBASE_URL + f"history/{chat_id}/{prod_id}/{today}.json", json=claims_today + 1)
-        requests.delete(FIREBASE_URL + f"otps/{otp}.json") # Xóa OTP sau khi dùng
+        requests.delete(FIREBASE_URL + f"otps/{otp}.json") 
             
-        # LẤY ACC
         res_acc = requests.get(FIREBASE_URL + f"products/{prod_id}/stock.json")
         stock = res_acc.json()
         
