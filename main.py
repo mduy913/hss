@@ -11,6 +11,7 @@ from flask import Flask, request
 # ================= CẤU HÌNH =================
 BOT_TOKEN = "8314558446:AAFGz92fVeLdomzfN0EeNZk-HFtDSC8hHEg"
 LINK4M_TOKEN = "699ac288bb556c3eae114a58"
+LAYMA_TOKEN = "b7d4d3eb19b808e8b529f9c13e053c75"
 RENDER_URL = "https://hss-hsha.onrender.com" 
 FIREBASE_URL = "https://shopmduy-default-rtdb.asia-southeast1.firebasedatabase.app/"
 # ============================================
@@ -41,27 +42,45 @@ def receive_update():
         return '', 200
     return '', 403
 
-# --- HÀM TẠO LINK (ẨN MÃ TOKEN) ---
+# --- HÀM TẠO LINK LINH HOẠT ---
 def generate_link4m(chat_id, prod_name, links_done, req_links):
-    # Tạo mã Token duy nhất, KHÔNG hiển thị cho khách
+    # Tạo mã Token duy nhất
     unique_token = f"MDUYK-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
-    
-    # Lưu Token vào Firebase
     requests.put(FIREBASE_URL + f"sessions/{chat_id}/active_token.json", json=unique_token)
     
-    # Gắn Token vào URL
     target_url = f"{RENDER_URL}/callback/{chat_id}/{unique_token}"
-    api_url = f"https://link4m.co/api-shorten/v2?api={LINK4M_TOKEN}&url={target_url}"
-    
-    try:
-        res = requests.get(api_url, timeout=10).json()
-        if res.get('status') == 'success':
-            markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton(f"👉 VƯỢT LINK {links_done + 1}/{req_links}", url=res.get('shortenedUrl')))
-            # ĐÃ XÓA PHẦN HIỂN THỊ MÃ TOKEN
-            bot.send_message(chat_id, f"Vui lòng vượt link {links_done + 1}/{req_links} bên dưới.", reply_markup=markup)
-    except:
-        bot.send_message(chat_id, "❌ Lỗi tạo link từ Link4M!")
+    short_url = None
+
+    # Nếu đây là link thứ 2 trở đi, cố gắng dùng LayMa.net
+    if links_done > 0:
+        try:
+            # Gọi API LayMa.net (Cấu trúc API dựa trên token bạn cung cấp)
+            layma_api = f"https://layma.net/api/shortlink?token={LAYMA_TOKEN}&url={target_url}"
+            res = requests.get(layma_api, timeout=10).json()
+            if res.get('status') == 'success' or res.get('link'):
+                short_url = res.get('link')
+                print("-> Đã tạo link bằng LayMa.net")
+        except Exception as e:
+            print("Lỗi LayMa, chuyển sang Link4M:", e)
+
+    # Nếu chưa có link (hoặc link thứ 1), dùng Link4M
+    if not short_url:
+        try:
+            api_url = f"https://link4m.co/api-shorten/v2?api={LINK4M_TOKEN}&url={target_url}"
+            res = requests.get(api_url, timeout=10).json()
+            if res.get('status') == 'success':
+                short_url = res.get('shortenedUrl')
+                print("-> Đã tạo link bằng Link4M")
+        except Exception as e:
+            print("Lỗi Link4M:", e)
+
+    # Gửi tin nhắn cho khách
+    if short_url:
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton(f"👉 VƯỢT LINK {links_done + 1}/{req_links}", url=short_url))
+        bot.send_message(chat_id, f"Vui lòng vượt link {links_done + 1}/{req_links} bên dưới.", reply_markup=markup)
+    else:
+        bot.send_message(chat_id, "❌ Hệ thống đang bảo trì link, vui lòng thử lại sau ít phút!")
 
 # --- WEBHOOK NHẬN KẾT QUẢ ---
 @app.route('/callback/<chat_id>/<token_from_url>', methods=['GET'])
@@ -74,7 +93,6 @@ def link4m_callback(chat_id, token_from_url):
         if session:
             saved_token = session.get("active_token")
             
-            # Nếu mã không khớp (ví dụ F5), trả về HTML báo lỗi
             if saved_token != token_from_url:
                 html = """
                 <html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
@@ -86,7 +104,6 @@ def link4m_callback(chat_id, token_from_url):
                 """
                 return html, 403
             
-            # Xóa token ngay lập tức
             requests.delete(FIREBASE_URL + f"sessions/{chat_id}/active_token.json")
             
             links_done = session.get("links_done", 0) + 1
