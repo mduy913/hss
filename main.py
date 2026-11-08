@@ -41,6 +41,15 @@ def update_product_settings(prod_name, links_req, max_claims):
 def add_acc_to_db(prod_name, user, pwd):
     requests.post(FIREBASE_URL + f"products/{prod_name}/stock.json", json={"user": user, "pass": pwd})
 
+# Hàm lấy số lần đã nhận trong ngày một cách chính xác
+def get_claims_today(chat_id, prod_name):
+    today = get_today()
+    res = requests.get(FIREBASE_URL + f"history/{chat_id}/{prod_name}/{today}.json")
+    data = res.json()
+    if isinstance(data, int):
+        return data
+    return 0
+
 # ================= WEBHOOKS =================
 @app.route(f'/{BOT_TOKEN}', methods=['POST'])
 def receive_update():
@@ -205,7 +214,7 @@ def handle_admin_actions(call):
         text = (f"Đang sửa sản phẩm: **{prod_name}**\n"
                 f"Hiện tại: Vượt {current_links} link, Tối đa {current_max} lần/ngày.\n\n"
                 f"Nhập cài đặt mới theo định dạng: `Số_Link | Số_Lần`\n"
-                f"Ví dụ: `1 | 2` (Vượt 1 link, tối đa 2 lần/ngày)")
+                f"Ví dụ: `1 | 2`")
         msg = bot.send_message(call.message.chat.id, text, reply_markup=ForceReply(selective=True), parse_mode='Markdown')
         bot.register_next_step_handler(msg, process_edit_prod_settings, prod_name)
 
@@ -243,7 +252,7 @@ def process_edit_prod_settings(message, prod_name):
     except:
         bot.send_message(message.chat.id, "❌ Sai định dạng. Hủy thao tác.", reply_markup=admin_main_menu())
 
-# Luồng xử lý thêm Acc (NHẬP NHIỀU ACC CÙNG LÚC)
+# Luồng xử lý thêm Acc
 def process_add_acc_prod(message):
     prod_name = message.text.strip()
     products = get_products()
@@ -252,8 +261,7 @@ def process_add_acc_prod(message):
         return
     
     text = (f"Nhập danh sách acc cho `{prod_name}`.\n"
-            f"Mỗi dòng một acc theo định dạng: `user | pass`\n"
-            f"Ví dụ:\n`user1 | pass1`\n`user2 | pass2`")
+            f"Mỗi dòng một acc theo định dạng: `user | pass`")
     msg = bot.send_message(message.chat.id, text, reply_markup=ForceReply(selective=True), parse_mode='Markdown')
     bot.register_next_step_handler(msg, process_add_acc_data, prod_name)
 
@@ -302,11 +310,9 @@ def buy_product(call):
              bot.send_message(chat_id, "❌ Sản phẩm không tồn tại!")
              return
 
+        # KIỂM TRA GIỚI HẠN LẤY TRONG NGÀY (SỬA LỖI ĐỌC DỮ LIỆU)
         max_claims = products[prod_name].get("max_claims", 1)
-        today = get_today()
-        
-        res_history = requests.get(FIREBASE_URL + f"history/{chat_id}/{prod_name}/{today}.json")
-        claims_today = res_history.json() if res_history.json() else 0
+        claims_today = get_claims_today(chat_id, prod_name)
         
         if claims_today >= max_claims:
             msg = (f"❌ **Bạn đã hết lượt lấy sản phẩm này trong hôm nay!**\n\n"
@@ -356,9 +362,9 @@ def claim_acc(message):
         requests.delete(FIREBASE_URL + f"products/{prod_name}/stock/{acc_key}.json")
         requests.delete(FIREBASE_URL + f"otps/{otp}.json")
         
+        # CẬP NHẬT LỊCH SỬ
         today = get_today()
-        res_history = requests.get(FIREBASE_URL + f"history/{chat_id}/{prod_name}/{today}.json")
-        claims_today = res_history.json() if res_history.json() else 0
+        claims_today = get_claims_today(chat_id, prod_name)
         requests.put(FIREBASE_URL + f"history/{chat_id}/{prod_name}/{today}.json", json=claims_today + 1)
         
         bot.reply_to(message, f"🎁 **TÀI KHOẢN CỦA BẠN:**\n\n`{acc_data['user']} | {acc_data['pass']}`\n\n*(Hãy copy ngay)*", parse_mode='Markdown')
