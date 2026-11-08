@@ -1,5 +1,5 @@
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, ForceReply
 import requests
 import random
 import string
@@ -11,7 +11,6 @@ from flask import Flask, request
 # ================= CẤU HÌNH =================
 BOT_TOKEN = "8314558446:AAFGz92fVeLdomzfN0EeNZk-HFtDSC8hHEg"
 LINK4M_TOKEN = "699ac288bb556c3eae114a58"
-LAYMA_TOKEN = "b7d4d3eb19b808e8b529f9c13e053c75"
 RENDER_URL = "https://hss-hsha.onrender.com" 
 FIREBASE_URL = "https://shopmduy-default-rtdb.asia-southeast1.firebasedatabase.app/"
 # ============================================
@@ -33,6 +32,7 @@ def save_product(prod_name, links_req):
 def add_acc_to_db(prod_name, user, pwd):
     requests.post(FIREBASE_URL + f"products/{prod_name}/stock.json", json={"user": user, "pass": pwd})
 
+# ================= WEBHOOKS =================
 @app.route(f'/{BOT_TOKEN}', methods=['POST'])
 def receive_update():
     if request.headers.get('content-type') == 'application/json':
@@ -42,47 +42,22 @@ def receive_update():
         return '', 200
     return '', 403
 
-# --- HÀM TẠO LINK LINH HOẠT ---
 def generate_link4m(chat_id, prod_name, links_done, req_links):
-    # Tạo mã Token duy nhất
     unique_token = f"MDUYK-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
     requests.put(FIREBASE_URL + f"sessions/{chat_id}/active_token.json", json=unique_token)
     
     target_url = f"{RENDER_URL}/callback/{chat_id}/{unique_token}"
-    short_url = None
+    api_url = f"https://link4m.co/api-shorten/v2?api={LINK4M_TOKEN}&url={target_url}"
+    
+    try:
+        res = requests.get(api_url, timeout=10).json()
+        if res.get('status') == 'success':
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton(f"👉 VƯỢT LINK {links_done + 1}/{req_links}", url=res.get('shortenedUrl')))
+            bot.send_message(chat_id, f"Vui lòng vượt link {links_done + 1}/{req_links} bên dưới.", reply_markup=markup)
+    except:
+        bot.send_message(chat_id, "❌ Lỗi tạo link từ Link4M!")
 
-    # Nếu đây là link thứ 2 trở đi, cố gắng dùng LayMa.net
-    if links_done > 0:
-        try:
-            # Gọi API LayMa.net (Cấu trúc API dựa trên token bạn cung cấp)
-            layma_api = f"https://layma.net/api/shortlink?token={LAYMA_TOKEN}&url={target_url}"
-            res = requests.get(layma_api, timeout=10).json()
-            if res.get('status') == 'success' or res.get('link'):
-                short_url = res.get('link')
-                print("-> Đã tạo link bằng LayMa.net")
-        except Exception as e:
-            print("Lỗi LayMa, chuyển sang Link4M:", e)
-
-    # Nếu chưa có link (hoặc link thứ 1), dùng Link4M
-    if not short_url:
-        try:
-            api_url = f"https://link4m.co/api-shorten/v2?api={LINK4M_TOKEN}&url={target_url}"
-            res = requests.get(api_url, timeout=10).json()
-            if res.get('status') == 'success':
-                short_url = res.get('shortenedUrl')
-                print("-> Đã tạo link bằng Link4M")
-        except Exception as e:
-            print("Lỗi Link4M:", e)
-
-    # Gửi tin nhắn cho khách
-    if short_url:
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton(f"👉 VƯỢT LINK {links_done + 1}/{req_links}", url=short_url))
-        bot.send_message(chat_id, f"Vui lòng vượt link {links_done + 1}/{req_links} bên dưới.", reply_markup=markup)
-    else:
-        bot.send_message(chat_id, "❌ Hệ thống đang bảo trì link, vui lòng thử lại sau ít phút!")
-
-# --- WEBHOOK NHẬN KẾT QUẢ ---
 @app.route('/callback/<chat_id>/<token_from_url>', methods=['GET'])
 def link4m_callback(chat_id, token_from_url):
     try:
@@ -94,18 +69,10 @@ def link4m_callback(chat_id, token_from_url):
             saved_token = session.get("active_token")
             
             if saved_token != token_from_url:
-                html = """
-                <html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-                <body style="background:#0b090a;color:#f6eef0;text-align:center;padding-top:50px;font-family:sans-serif;">
-                <h2 style="color:#a91f2b;">LỖI XÁC THỰC</h2>
-                <p>Link này đã được sử dụng hoặc không hợp lệ.</p>
-                <p>Vui lòng quay lại Telegram để lấy link vượt tiếp theo!</p>
-                </body></html>
-                """
+                html = "<html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'></head><body style='background:#0b090a;color:#f6eef0;text-align:center;padding-top:50px;font-family:sans-serif;'><h2 style='color:#a91f2b;'>LỖI XÁC THỰC</h2><p>Link này đã được sử dụng hoặc không hợp lệ.</p></body></html>"
                 return html, 403
             
             requests.delete(FIREBASE_URL + f"sessions/{chat_id}/active_token.json")
-            
             links_done = session.get("links_done", 0) + 1
             req_links = session.get("links_required", 1)
             prod_name = session.get("product")
@@ -121,33 +88,19 @@ def link4m_callback(chat_id, token_from_url):
                        f"*(Mã này sẽ hết hạn sau 5 phút)*")
                 bot.send_message(chat_id, msg, parse_mode='Markdown')
                 
-                html_ok = """
-                <html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-                <body style="background:#0b090a;color:#61c995;text-align:center;padding-top:50px;font-family:sans-serif;">
-                <h2>THÀNH CÔNG!</h2>
-                <p>Đã vượt đủ số link.</p>
-                <p>Vui lòng quay lại Telegram để nhận mã OTP.</p>
-                </body></html>
-                """
-                return html_ok, 200
+                html = "<html><body style='background:#0b090a;color:#61c995;text-align:center;padding-top:50px;'><h2>THÀNH CÔNG!</h2></body></html>"
+                return html, 200
             else:
                 requests.put(FIREBASE_URL + f"sessions/{chat_id}/links_done.json", json=links_done)
                 generate_link4m(chat_id, prod_name, links_done, req_links)
                 
-                html_next = f"""
-                <html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-                <body style="background:#0b090a;color:#f6eef0;text-align:center;padding-top:50px;font-family:sans-serif;">
-                <h2 style="color:#61c995;">ĐÃ XÁC NHẬN LINK {links_done}/{req_links}</h2>
-                <p>Vui lòng quay lại Telegram để bấm vượt link tiếp theo.</p>
-                </body></html>
-                """
-                return html_next, 200
-                
+                html = f"<html><body style='background:#0b090a;color:#61c995;text-align:center;padding-top:50px;'><h2>ĐÃ XÁC NHẬN LINK {links_done}/{req_links}</h2></body></html>"
+                return html, 200
         return "Session not found", 404
     except Exception as e:
         return "Error", 500
 
-# --- CÁC LỆNH CƠ BẢN ---
+# ================= GIAO DIỆN NGƯỜI DÙNG =================
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     global ADMIN_ID
@@ -160,62 +113,101 @@ def send_welcome(message):
     if saved_admin is None:
         requests.put(FIREBASE_URL + "admin_id.json", json=chat_id)
         ADMIN_ID = chat_id
-        bot.send_message(chat_id, "👑 Bạn là ADMIN đầu tiên!\nHãy dùng /add_prod để tạo sản phẩm.")
+        bot.send_message(chat_id, "👑 Bạn là ADMIN đầu tiên!\nBấm nút bên dưới để vào bảng điều khiển.", reply_markup=admin_main_menu())
         return
     
     ADMIN_ID = saved_admin
     if chat_id == ADMIN_ID:
-        markup = ReplyKeyboardMarkup(resize_keyboard=True)
-        markup.add(KeyboardButton("🛒 CHỌN SẢN PHẨM"))
-        bot.send_message(chat_id, "Chào Admin! Đã sẵn sàng.", reply_markup=markup)
+        bot.send_message(chat_id, "Chào Admin! Bấm nút bên dưới để quản lý.", reply_markup=admin_main_menu())
     else:
-        markup = ReplyKeyboardMarkup(resize_keyboard=True)
-        markup.add(KeyboardButton("🛒 CHỌN SẢN PHẨM"))
-        bot.send_message(chat_id, "Chào mừng bạn! Hãy chọn sản phẩm.", reply_markup=markup)
+        # Giao diện người dùng
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🛒 CHỌN SẢN PHẨM", callback_data="user_products"))
+        bot.send_message(chat_id, "Chào mừng bạn! Hãy bấm nút bên dưới để chọn sản phẩm.", reply_markup=markup)
 
-@bot.message_handler(commands=['force_admin'])
-def force_admin(message):
-    chat_id = message.chat.id
-    requests.put(FIREBASE_URL + "admin_id.json", json=chat_id)
-    global ADMIN_ID
-    ADMIN_ID = chat_id
-    bot.reply_to(message, "👑 Đã cấp quyền Admin cho bạn!")
+# Menu Admin
+def admin_main_menu():
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("➕ Thêm Sản Phẩm", callback_data="admin_add_prod"),
+        InlineKeyboardButton("➕ Thêm Acc", callback_data="admin_add_acc")
+    )
+    markup.add(
+        InlineKeyboardButton("📦 Xem Kho Hàng", callback_data="admin_view_stock")
+    )
+    return markup
 
-@bot.message_handler(commands=['add_prod'])
-def add_prod(message):
-    global ADMIN_ID
-    if message.chat.id != ADMIN_ID: return
+# ================= LỆNH ADMIN (XỬ LÝ NÚT BẤM) =================
+@bot.callback_query_handler(func=lambda call: call.data.startswith('admin_'))
+def handle_admin_actions(call):
+    if call.from_user.id != ADMIN_ID: return
+    bot.answer_callback_query(call.id)
+
+    if call.data == "admin_add_prod":
+        msg = bot.send_message(call.message.chat.id, "Nhập tên sản phẩm:", reply_markup=ForceReply(selective=True))
+        bot.register_next_step_handler(msg, process_add_prod_name)
+
+    elif call.data == "admin_add_acc":
+        msg = bot.send_message(call.message.chat.id, "Nhập tên sản phẩm muốn thêm Acc:", reply_markup=ForceReply(selective=True))
+        bot.register_next_step_handler(msg, process_add_acc_prod)
+
+    elif call.data == "admin_view_stock":
+        products = get_products()
+        text = "📦 **DANH SÁCH KHO**\n\n"
+        if not products: text += "Kho đang trống."
+        for name, data in products.items():
+            stock_count = len(data.get("stock", {}))
+            text += f"🔹 **{name}**: {stock_count} acc (Yêu cầu {data.get('links_required', 1)} link)\n"
+        bot.send_message(call.message.chat.id, text, parse_mode='Markdown', reply_markup=admin_main_menu())
+
+# Luồng xử lý thêm sản phẩm
+def process_add_prod_name(message):
+    name = message.text.strip()
+    msg = bot.send_message(message.chat.id, f"Đã chọn tên: {name}\nNhập số link cần vượt (VD: 1):", reply_markup=ForceReply(selective=True))
+    bot.register_next_step_handler(msg, process_add_prod_links, name)
+
+def process_add_prod_links(message, name):
     try:
-        parts = message.text.replace('/add_prod', '').strip().split('|')
-        name = parts[0].strip()
-        links = int(parts[1].strip())
+        links = int(message.text.strip())
         save_product(name, links)
-        bot.reply_to(message, f"✅ Đã thêm SP: {name} (Cần {links} link)")
-    except Exception as e: 
-        bot.reply_to(message, f"❌ Lỗi cú pháp! VD: `/add_prod VIP | 2`", parse_mode='Markdown')
+        bot.send_message(message.chat.id, f"✅ Đã tạo sản phẩm **{name}** (Yêu cầu vượt {links} link).", parse_mode='Markdown', reply_markup=admin_main_menu())
+    except:
+        bot.send_message(message.chat.id, "❌ Số link không hợp lệ. Hủy thao tác.", reply_markup=admin_main_menu())
 
-@bot.message_handler(commands=['add_acc'])
-def add_acc(message):
-    global ADMIN_ID
-    if message.chat.id != ADMIN_ID: return
-    try:
-        parts = message.text.replace('/add_acc', '').strip().split('|')
-        add_acc_to_db(parts[0].strip(), parts[1].strip(), parts[2].strip())
-        bot.reply_to(message, f"✅ Đã thêm acc vào {parts[0].strip()}")
-    except Exception as e: 
-        bot.reply_to(message, f"❌ Lỗi cú pháp! VD: `/add_acc VIP | user | pass`", parse_mode='Markdown')
-
-@bot.message_handler(func=lambda message: message.text == "🛒 CHỌN SẢN PHẨM")
-def list_products(message):
+# Luồng xử lý thêm Acc
+def process_add_acc_prod(message):
+    prod_name = message.text.strip()
     products = get_products()
-    if not products: 
-        bot.send_message(message.chat.id, "Chưa có sản phẩm nào!")
+    if prod_name not in products:
+        bot.send_message(message.chat.id, f"❌ Sản phẩm `{prod_name}` không tồn tại.", parse_mode='Markdown', reply_markup=admin_main_menu())
         return
-    markup = InlineKeyboardMarkup()
-    for name in products:
-        safe_name = urllib.parse.quote(name)
-        markup.add(InlineKeyboardButton(f"🎁 {name}", callback_data=f"buy_{safe_name}"))
-    bot.send_message(message.chat.id, "Chọn sản phẩm:", reply_markup=markup)
+    msg = bot.send_message(message.chat.id, f"Nhập tài khoản và mật khẩu cho `{prod_name}` (Định dạng: user | pass):", reply_markup=ForceReply(selective=True), parse_mode='Markdown')
+    bot.register_next_step_handler(msg, process_add_acc_data, prod_name)
+
+def process_add_acc_data(message, prod_name):
+    parts = message.text.split('|')
+    if len(parts) >= 2:
+        user, pwd = parts[0].strip(), parts[1].strip()
+        add_acc_to_db(prod_name, user, pwd)
+        bot.send_message(message.chat.id, f"✅ Đã thêm acc `{user}` vào **{prod_name}**.", parse_mode='Markdown', reply_markup=admin_main_menu())
+    else:
+        bot.send_message(message.chat.id, "❌ Sai định dạng. Hủy thao tác.", reply_markup=admin_main_menu())
+
+# ================= LỆNH NGƯỜI DÙNG =================
+@bot.callback_query_handler(func=lambda call: call.data.startswith('user_'))
+def handle_user_actions(call):
+    bot.answer_callback_query(call.id)
+
+    if call.data == "user_products":
+        products = get_products()
+        if not products:
+            bot.send_message(call.message.chat.id, "Hiện chưa có sản phẩm nào!")
+            return
+        markup = InlineKeyboardMarkup()
+        for name in products:
+            safe_name = urllib.parse.quote(name)
+            markup.add(InlineKeyboardButton(f"🎁 {name}", callback_data=f"buy_{safe_name}"))
+        bot.edit_message_text("Chọn sản phẩm bạn muốn nhận:", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
 def buy_product(call):
@@ -231,11 +223,14 @@ def buy_product(call):
 
         req_links = products[prod_name]["links_required"]
         requests.put(FIREBASE_URL + f"sessions/{chat_id}.json", json={"product": prod_name, "links_done": 0, "links_required": req_links})
+        
+        bot.delete_message(chat_id, call.message.message_id)
         generate_link4m(chat_id, prod_name, 0, req_links)
             
     except Exception as e:
         print("Lỗi nút bấm:", e)
 
+# ================= NHẬN MÃ OTP =================
 @bot.message_handler(commands=['claim'])
 def claim_acc(message):
     chat_id = message.chat.id
