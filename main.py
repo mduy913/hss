@@ -120,12 +120,11 @@ def send_welcome(message):
     if chat_id == ADMIN_ID:
         bot.send_message(chat_id, "Chào Admin! Bấm nút bên dưới để quản lý.", reply_markup=admin_main_menu())
     else:
-        # Giao diện người dùng
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🛒 CHỌN SẢN PHẨM", callback_data="user_products"))
         bot.send_message(chat_id, "Chào mừng bạn! Hãy bấm nút bên dưới để chọn sản phẩm.", reply_markup=markup)
 
-# Menu Admin
+# --- MENU ADMIN ---
 def admin_main_menu():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -133,17 +132,26 @@ def admin_main_menu():
         InlineKeyboardButton("➕ Thêm Acc", callback_data="admin_add_acc")
     )
     markup.add(
-        InlineKeyboardButton("📦 Xem Kho Hàng", callback_data="admin_view_stock")
+        InlineKeyboardButton("📦 Xem Kho Hàng", callback_data="admin_view_stock"),
+        InlineKeyboardButton("🔄 Quay Lại", callback_data="admin_back")
     )
     return markup
 
-# ================= LỆNH ADMIN (XỬ LÝ NÚT BẤM) =================
+# Nút Quay Lại
+def back_button():
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🔙 Quay Lại", callback_data="admin_back"))
+    return markup
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith('admin_'))
 def handle_admin_actions(call):
     if call.from_user.id != ADMIN_ID: return
     bot.answer_callback_query(call.id)
 
-    if call.data == "admin_add_prod":
+    if call.data == "admin_back":
+        bot.edit_message_text("Chào Admin! Bấm nút bên dưới để quản lý.", call.message.chat.id, call.message.message_id, reply_markup=admin_main_menu())
+
+    elif call.data == "admin_add_prod":
         msg = bot.send_message(call.message.chat.id, "Nhập tên sản phẩm:", reply_markup=ForceReply(selective=True))
         bot.register_next_step_handler(msg, process_add_prod_name)
 
@@ -154,11 +162,14 @@ def handle_admin_actions(call):
     elif call.data == "admin_view_stock":
         products = get_products()
         text = "📦 **DANH SÁCH KHO**\n\n"
-        if not products: text += "Kho đang trống."
-        for name, data in products.items():
-            stock_count = len(data.get("stock", {}))
-            text += f"🔹 **{name}**: {stock_count} acc (Yêu cầu {data.get('links_required', 1)} link)\n"
-        bot.send_message(call.message.chat.id, text, parse_mode='Markdown', reply_markup=admin_main_menu())
+        if not products: 
+            text += "Kho đang trống."
+        else:
+            for name, data in products.items():
+                # ĐẾM CHÍNH XÁC SỐ LƯỢNG ACC
+                stock_count = len(data.get("stock", {})) if data.get("stock") else 0
+                text += f"🔹 **{name}**: {stock_count} acc (Yêu cầu {data.get('links_required', 1)} link)\n"
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode='Markdown', reply_markup=back_button())
 
 # Luồng xử lý thêm sản phẩm
 def process_add_prod_name(message):
@@ -174,24 +185,36 @@ def process_add_prod_links(message, name):
     except:
         bot.send_message(message.chat.id, "❌ Số link không hợp lệ. Hủy thao tác.", reply_markup=admin_main_menu())
 
-# Luồng xử lý thêm Acc
+# Luồng xử lý thêm Acc (NHẬP NHIỀU ACC CÙNG LÚC)
 def process_add_acc_prod(message):
     prod_name = message.text.strip()
     products = get_products()
     if prod_name not in products:
         bot.send_message(message.chat.id, f"❌ Sản phẩm `{prod_name}` không tồn tại.", parse_mode='Markdown', reply_markup=admin_main_menu())
         return
-    msg = bot.send_message(message.chat.id, f"Nhập tài khoản và mật khẩu cho `{prod_name}` (Định dạng: user | pass):", reply_markup=ForceReply(selective=True), parse_mode='Markdown')
+    
+    text = (f"Nhập danh sách acc cho `{prod_name}`.\n"
+            f"Mỗi dòng một acc theo định dạng: `user | pass`\n"
+            f"Ví dụ:\n`user1 | pass1`\n`user2 | pass2`")
+    msg = bot.send_message(message.chat.id, text, reply_markup=ForceReply(selective=True), parse_mode='Markdown')
     bot.register_next_step_handler(msg, process_add_acc_data, prod_name)
 
 def process_add_acc_data(message, prod_name):
-    parts = message.text.split('|')
-    if len(parts) >= 2:
-        user, pwd = parts[0].strip(), parts[1].strip()
-        add_acc_to_db(prod_name, user, pwd)
-        bot.send_message(message.chat.id, f"✅ Đã thêm acc `{user}` vào **{prod_name}**.", parse_mode='Markdown', reply_markup=admin_main_menu())
+    lines = message.text.strip().split('\n')
+    success_count = 0
+    
+    for line in lines:
+        parts = line.split('|')
+        if len(parts) >= 2:
+            user, pwd = parts[0].strip(), parts[1].strip()
+            if user and pwd:
+                add_acc_to_db(prod_name, user, pwd)
+                success_count += 1
+                
+    if success_count > 0:
+        bot.send_message(message.chat.id, f"✅ Đã thêm thành công **{success_count}** acc vào `{prod_name}`.", parse_mode='Markdown', reply_markup=admin_main_menu())
     else:
-        bot.send_message(message.chat.id, "❌ Sai định dạng. Hủy thao tác.", reply_markup=admin_main_menu())
+        bot.send_message(message.chat.id, "❌ Không có acc nào được thêm. Kiểm tra lại định dạng.", reply_markup=admin_main_menu())
 
 # ================= LỆNH NGƯỜI DÙNG =================
 @bot.callback_query_handler(func=lambda call: call.data.startswith('user_'))
