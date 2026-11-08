@@ -6,7 +6,7 @@ import string
 import threading
 import time
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, request
 
 # ================= CẤU HÌNH =================
@@ -20,8 +20,6 @@ bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
 ADMIN_ID = None 
-# Bộ nhớ tạm để đếm số lần mua trong ngày (chống lỗi Firebase)
-LOCAL_HISTORY = {} 
 
 def get_today():
     return datetime.now().strftime("%Y-%m-%d")
@@ -32,31 +30,20 @@ def get_products():
         return res.json() if res.json() else {}
     except: return {}
 
-def get_claims_today(chat_id, prod_name):
-    today = get_today()
-    key = urllib.parse.quote(prod_name, safe='')
-    
-    # 1. Kiểm tra trong bộ nhớ tạm trước
-    cache_key = f"{chat_id}_{key}_{today}"
-    if cache_key in LOCAL_HISTORY:
-        return LOCAL_HISTORY[cache_key]
+# ================= HÀM TỰ ĐỘNG XOÁ LỊCH SỬ LÚC 00:00 =================
+def reset_daily_history():
+    while True:
+        now = datetime.now()
+        tomorrow = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        seconds_until_midnight = (tomorrow - now).total_seconds()
         
-    # 2. Nếu không có, kiểm tra trên Firebase
-    res = requests.get(FIREBASE_URL + f"history/{chat_id}/{key}/{today}.json")
-    data = res.json()
-    if isinstance(data, int):
-        LOCAL_HISTORY[cache_key] = data
-        return data
-    return 0
-
-def add_history(chat_id, prod_name):
-    today = get_today()
-    key = urllib.parse.quote(prod_name, safe='')
-    cache_key = f"{chat_id}_{key}_{today}"
-    
-    current = get_claims_today(chat_id, prod_name) + 1
-    LOCAL_HISTORY[cache_key] = current
-    requests.put(FIREBASE_URL + f"history/{chat_id}/{key}/{today}.json", json=current)
+        time.sleep(seconds_until_midnight) 
+        
+        try:
+            requests.delete(FIREBASE_URL + "history.json")
+            print("-> Đã reset toàn bộ lịch sử lấy acc lúc 00:00")
+        except Exception as e:
+            print("Lỗi reset history:", e)
 
 # ================= WEBHOOKS =================
 @app.route(f'/{BOT_TOKEN}', methods=['POST'])
@@ -68,7 +55,7 @@ def receive_update():
         return '', 200
     return '', 403
 
-def generate_link4m(chat_id, prod_name, links_done, req_links):
+def generate_link4m(chat_id, prod_id, links_done, req_links):
     unique_token = f"MDUYK-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
     requests.put(FIREBASE_URL + f"sessions/{chat_id}/active_token.json", json=unique_token)
     
@@ -99,11 +86,11 @@ def link4m_callback(chat_id, token_from_url):
             requests.delete(FIREBASE_URL + f"sessions/{chat_id}/active_token.json")
             links_done = session.get("links_done", 0) + 1
             req_links = session.get("links_required", 1)
-            prod_name = session.get("product")
+            prod_id = session.get("product_id")
             
             if links_done >= req_links:
                 otp = ''.join(random.choices(string.digits, k=6))
-                requests.put(FIREBASE_URL + f"otps/{otp}.json", json={"chat_id": chat_id, "product": prod_name})
+                requests.put(FIREBASE_URL + f"otps/{otp}.json", json={"chat_id": chat_id, "product_id": prod_id})
                 requests.delete(FIREBASE_URL + f"sessions/{chat_id}.json")
                 
                 msg = (f"🎉 **VƯỢT LINK THÀNH CÔNG!**\n\n"
@@ -114,7 +101,7 @@ def link4m_callback(chat_id, token_from_url):
                 return "<html><body style='background:#0b090a;color:#61c995;text-align:center;padding-top:50px;'><h2>THÀNH CÔNG!</h2></body></html>", 200
             else:
                 requests.put(FIREBASE_URL + f"sessions/{chat_id}/links_done.json", json=links_done)
-                generate_link4m(chat_id, prod_name, links_done, req_links)
+                generate_link4m(chat_id, prod_id, links_done, req_links)
                 return f"<html><body style='background:#0b090a;color:#61c995;text-align:center;padding-top:50px;'><h2>ĐÃ XÁC NHẬN {links_done}/{req_links}</h2></body></html>", 200
         return "Session not found", 404
     except Exception as e:
@@ -195,32 +182,31 @@ def handle_admin_actions(call):
     elif call.data == "admin_edit_prod_menu":
         products = get_products()
         if not products:
-            bot.edit_message_text("Kho đang trống, không có sản phẩm nào để sửa.", call.message.chat.id, call.message.message_id, reply_markup=back_button())
+            bot.edit_message_text("Kho đang trống.", call.message.chat.id, call.message.message_id, reply_markup=back_button())
             return
         markup = InlineKeyboardMarkup()
         for key, data in products.items():
             name = data.get("name", key)
             markup.add(InlineKeyboardButton(f"⚙️ {name}", callback_data=f"admin_edit_prod_{key}"))
         markup.add(InlineKeyboardButton("🔙 Quay Lại", callback_data="admin_back"))
-        bot.edit_message_text("Chọn sản phẩm bạn muốn chỉnh sửa:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+        bot.edit_message_text("Chọn sản phẩm muốn chỉnh sửa:", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
     elif call.data.startswith('admin_edit_prod_'):
-        key = call.data.split('_', 3)[3]
+        prod_id = call.data.split('_', 3)[3]
         products = get_products()
-        if key not in products: return
+        if prod_id not in products: return
         
-        name = products[key].get("name", key)
-        current_links = products[key].get("links_required", 1)
-        current_max = products[key].get("max_claims", 1)
+        name = products[prod_id].get("name", prod_id)
+        current_links = products[prod_id].get("links_required", 1)
+        current_max = products[prod_id].get("max_claims", 1)
         
-        text = (f"Đang sửa sản phẩm: **{name}**\n"
+        text = (f"Đang sửa: **{name}**\n"
                 f"Hiện tại: Vượt {current_links} link, Tối đa {current_max} lần/ngày.\n\n"
-                f"Nhập cài đặt mới: `Số_Link | Số_Lần`\n"
-                f"Ví dụ: `1 | 2`")
+                f"Nhập cài đặt mới: `Số_Link | Số_Lần`")
         msg = bot.send_message(call.message.chat.id, text, reply_markup=ForceReply(selective=True), parse_mode='Markdown')
-        bot.register_next_step_handler(msg, process_edit_prod_settings, key, name)
+        bot.register_next_step_handler(msg, process_edit_prod_settings, prod_id, name)
 
-# Luồng xử lý thêm sản phẩm
+# Luồng xử lý Admin
 def process_add_prod_name(message):
     name = message.text.strip()
     msg = bot.send_message(message.chat.id, f"Đã chọn: {name}\nNhập số link cần vượt (VD: 1):", reply_markup=ForceReply(selective=True))
@@ -237,38 +223,41 @@ def process_add_prod_links(message, name):
 def process_add_prod_limit(message, name, links):
     try:
         max_claims = int(message.text.strip())
-        key = urllib.parse.quote(name, safe='')
-        requests.put(FIREBASE_URL + f"products/{key}/name.json", json=name)
-        requests.put(FIREBASE_URL + f"products/{key}/links_required.json", json=links)
-        requests.put(FIREBASE_URL + f"products/{key}/max_claims.json", json=max_claims)
+        prod_id = str(int(time.time())) 
+        requests.put(FIREBASE_URL + f"products/{prod_id}/name.json", json=name)
+        requests.put(FIREBASE_URL + f"products/{prod_id}/links_required.json", json=links)
+        requests.put(FIREBASE_URL + f"products/{prod_id}/max_claims.json", json=max_claims)
         bot.send_message(message.chat.id, f"✅ Đã tạo **{name}** (Vượt {links} link, Tối đa {max_claims} lần/ngày).", parse_mode='Markdown', reply_markup=admin_main_menu())
     except:
         bot.send_message(message.chat.id, "❌ Số lần không hợp lệ.", reply_markup=admin_main_menu())
 
-# Luồng chỉnh sửa sản phẩm
-def process_edit_prod_settings(message, key, name):
+def process_edit_prod_settings(message, prod_id, name):
     try:
         parts = message.text.split('|')
         links = int(parts[0].strip())
         max_claims = int(parts[1].strip())
-        requests.put(FIREBASE_URL + f"products/{key}/links_required.json", json=links)
-        requests.put(FIREBASE_URL + f"products/{key}/max_claims.json", json=max_claims)
+        requests.put(FIREBASE_URL + f"products/{prod_id}/links_required.json", json=links)
+        requests.put(FIREBASE_URL + f"products/{prod_id}/max_claims.json", json=max_claims)
         bot.send_message(message.chat.id, f"✅ Đã cập nhật **{name}**: Vượt {links} link, Tối đa {max_claims} lần/ngày.", parse_mode='Markdown', reply_markup=admin_main_menu())
     except:
         bot.send_message(message.chat.id, "❌ Sai định dạng.", reply_markup=admin_main_menu())
 
-# Luồng thêm acc
 def process_add_acc_prod(message):
     prod_name = message.text.strip()
-    key = urllib.parse.quote(prod_name, safe='')
     products = get_products()
-    if key not in products:
+    prod_id = None
+    for key, data in products.items():
+        if data.get("name") == prod_name:
+            prod_id = key
+            break
+            
+    if not prod_id:
         bot.send_message(message.chat.id, f"❌ Sản phẩm `{prod_name}` không tồn tại.", parse_mode='Markdown', reply_markup=admin_main_menu())
         return
     msg = bot.send_message(message.chat.id, f"Nhập danh sách acc cho `{prod_name}` (Mỗi dòng: user | pass):", reply_markup=ForceReply(selective=True), parse_mode='Markdown')
-    bot.register_next_step_handler(msg, process_add_acc_data, key, prod_name)
+    bot.register_next_step_handler(msg, process_add_acc_data, prod_id, prod_name)
 
-def process_add_acc_data(message, key, prod_name):
+def process_add_acc_data(message, prod_id, prod_name):
     lines = message.text.strip().split('\n')
     success_count = 0
     for line in lines:
@@ -276,7 +265,7 @@ def process_add_acc_data(message, key, prod_name):
         if len(parts) >= 2:
             user, pwd = parts[0].strip(), parts[1].strip()
             if user and pwd:
-                requests.post(FIREBASE_URL + f"products/{key}/stock.json", json={"user": user, "pass": pwd})
+                requests.post(FIREBASE_URL + f"products/{prod_id}/stock.json", json={"user": user, "pass": pwd})
                 success_count += 1
     if success_count > 0:
         bot.send_message(message.chat.id, f"✅ Đã thêm **{success_count}** acc vào `{prod_name}`.", parse_mode='Markdown', reply_markup=admin_main_menu())
@@ -302,17 +291,21 @@ def handle_user_actions(call):
 def buy_product(call):
     try:
         bot.answer_callback_query(call.id)
-        key = call.data.split('_', 1)[1]
+        prod_id = call.data.split('_', 1)[1]
         chat_id = call.message.chat.id
         products = get_products()
         
-        if key not in products:
+        if prod_id not in products:
              bot.send_message(chat_id, "❌ Sản phẩm không tồn tại!")
              return
 
-        prod_name = products[key].get("name", key)
-        max_claims = products[key].get("max_claims", 1)
-        claims_today = get_claims_today(chat_id, prod_name)
+        prod_name = products[prod_id].get("name", prod_id)
+        max_claims = products[prod_id].get("max_claims", 1)
+        
+        today = get_today()
+        history_res = requests.get(FIREBASE_URL + f"history/{chat_id}/{prod_id}/{today}.json")
+        data_hist = history_res.json()
+        claims_today = data_hist if isinstance(data_hist, int) else 0
         
         if claims_today >= max_claims:
             msg = ("❌ **Bạn đã hết lượt lấy sản phẩm này trong hôm nay!**\n\n"
@@ -321,14 +314,14 @@ def buy_product(call):
             bot.send_message(chat_id, msg, parse_mode='Markdown')
             return
 
-        req_links = products[key]["links_required"]
-        requests.put(FIREBASE_URL + f"sessions/{chat_id}.json", json={"product": prod_name, "links_done": 0, "links_required": req_links})
+        req_links = products[prod_id]["links_required"]
+        requests.put(FIREBASE_URL + f"sessions/{chat_id}.json", json={"product_id": prod_id, "links_done": 0, "links_required": req_links})
         bot.delete_message(chat_id, call.message.message_id)
-        generate_link4m(chat_id, prod_name, 0, req_links)
+        generate_link4m(chat_id, prod_id, 0, req_links)
     except Exception as e:
         print("Lỗi nút bấm:", e)
 
-# ================= NHẬN MÃ OTP (CẬP NHẬT CẢ 2 NƠI) =================
+# ================= NHẬN MÃ OTP (ĐẾM KỂ CẢ KHI HẾT HÀNG) =================
 @bot.message_handler(commands=['claim'])
 def claim_acc(message):
     chat_id = message.chat.id
@@ -344,30 +337,55 @@ def claim_acc(message):
             bot.reply_to(message, "❌ Không phải mã của bạn!")
             return
             
-        prod_name = session["product"]
-        key = urllib.parse.quote(prod_name, safe='')
+        prod_id = session["product_id"]
+        prod_res = requests.get(FIREBASE_URL + f"products/{prod_id}.json")
+        prod_data = prod_res.json()
         
-        res_acc = requests.get(FIREBASE_URL + f"products/{key}/stock.json")
+        if not prod_data:
+            requests.delete(FIREBASE_URL + f"otps/{otp}.json")
+            bot.reply_to(message, "❌ Sản phẩm này không còn tồn tại!")
+            return
+            
+        max_claims = prod_data.get("max_claims", 1)
+        
+        # KIỂM TRA LẠI LẦN NỮA
+        today = get_today()
+        history_res = requests.get(FIREBASE_URL + f"history/{chat_id}/{prod_id}/{today}.json")
+        data_hist = history_res.json()
+        claims_today = data_hist if isinstance(data_hist, int) else 0
+        
+        if claims_today >= max_claims:
+            requests.delete(FIREBASE_URL + f"otps/{otp}.json")
+            bot.reply_to(message, "❌ **Bạn đã vượt đủ số lượng hôm nay!**\nVui lòng quay lại sau 00:00 để tiếp tục.")
+            return
+            
+        # TÍNH 1 LƯỢT VƯỢT KỂ CẢ KHI KHO HẾT HÀNG
+        requests.put(FIREBASE_URL + f"history/{chat_id}/{prod_id}/{today}.json", json=claims_today + 1)
+        requests.delete(FIREBASE_URL + f"otps/{otp}.json") # Xóa OTP sau khi dùng
+            
+        # LẤY ACC
+        res_acc = requests.get(FIREBASE_URL + f"products/{prod_id}/stock.json")
         stock = res_acc.json()
         
         if not stock:
-            requests.delete(FIREBASE_URL + f"otps/{otp}.json")
-            bot.reply_to(message, "❌ Kho đã hết tài khoản! Vui lòng liên hệ @mduyk để hỗ trợ.")
+            bot.reply_to(message, "❌ Kho đã hết tài khoản! Lượt vượt của bạn hôm nay đã bị trừ. Vui lòng liên hệ @mduyk để hỗ trợ.")
             return
             
         acc_key = list(stock.keys())[0]
         acc_data = stock[acc_key]
         
-        requests.delete(FIREBASE_URL + f"products/{key}/stock/{acc_key}.json")
-        requests.delete(FIREBASE_URL + f"otps/{otp}.json")
-        
-        # CẬP NHẬT LỊCH SỬ (VÀO CACHE VÀ FIREBASE)
-        add_history(chat_id, prod_name)
+        requests.delete(FIREBASE_URL + f"products/{prod_id}/stock/{acc_key}.json")
         
         bot.reply_to(message, f"🎁 **TÀI KHOẢN CỦA BẠN:**\n\n`{acc_data['user']} | {acc_data['pass']}`\n\n*(Hãy copy ngay)*", parse_mode='Markdown')
         
     except Exception as e:
         bot.reply_to(message, f"Lỗi: {e}")
+
+# --- CHẠY NGẦM RESET LÚC 00:00 ---
+def start_reset_thread():
+    t = threading.Thread(target=reset_daily_history)
+    t.daemon = True
+    t.start()
 
 def keep_alive():
     while True:
@@ -379,5 +397,8 @@ if __name__ == '__main__':
     bot.remove_webhook()
     time.sleep(1)
     bot.set_webhook(url=f"{RENDER_URL}/{BOT_TOKEN}")
+    
+    start_reset_thread()
     threading.Thread(target=keep_alive, daemon=True).start()
+    
     app.run(host='0.0.0.0', port=3000)
