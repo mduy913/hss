@@ -41,15 +41,19 @@ def generate_link4m(chat_id, prod_id, links_done, req_links):
     
     # --- 1. THỬ GỌI LAYMA TRƯỚC ---
     try:
+        # Gọi API LayMa
         layma_api = f"https://api.layma.net/api/admin/shortlink/quicklink?tokenUser={LAYMA_TOKEN}&format=json&url={target_url}"
         res_layma = requests.get(layma_api, timeout=10).json()
         
-        # LayMa trả về success: true và link trong "html"
+        # Kiểm tra kết quả trả về
         if res_layma.get("success") is True and res_layma.get("html"):
             final_short_url = res_layma.get("html")
             print("-> Đã tạo link qua LayMa")
+        else:
+            # Báo lỗi ra Telegram để Admin biết
+            bot.send_message(chat_id, f"⚠️ LayMa báo lỗi:\n`{res_layma}`\n\nĐang chuyển sang Link4M...", parse_mode='Markdown')
     except Exception as e:
-        print("Lỗi gọi LayMa:", e)
+        bot.send_message(chat_id, f"⚠️ Lỗi kết nối LayMa:\n`{e}`\n\nĐang chuyển sang Link4M...", parse_mode='Markdown')
 
     # --- 2. NẾU LAYMA LỖI, GỌI LINK4M ---
     if not final_short_url:
