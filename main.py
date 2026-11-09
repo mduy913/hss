@@ -12,6 +12,7 @@ from flask import Flask, request
 # ================= CẤU HÌNH =================
 BOT_TOKEN = "8314558446:AAFGz92fVeLdomzfN0EeNZk-HFtDSC8hHEg"
 LINK4M_TOKEN = "699ac288bb556c3eae114a58"
+LAYMA_TOKEN = "b7d4d3eb19b808e8b529f9c13e053c75"
 RENDER_URL = "https://hss-hsha.onrender.com" 
 FIREBASE_URL = "https://shopmduy-default-rtdb.asia-southeast1.firebasedatabase.app/"
 # ============================================
@@ -29,6 +30,45 @@ def get_products():
         res = requests.get(FIREBASE_URL + "products.json")
         return res.json() if res.json() else {}
     except: return {}
+
+# ================= HÀM TẠO LINK (LAYMA -> LINK4M) =================
+def generate_link4m(chat_id, prod_id, links_done, req_links):
+    unique_token = f"MDUYK-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
+    requests.put(FIREBASE_URL + f"sessions/{chat_id}/active_token.json", json=unique_token)
+    
+    target_url = f"{RENDER_URL}/callback/{chat_id}/{unique_token}"
+    final_short_url = None
+    
+    # --- 1. THỬ GỌI LAYMA TRƯỚC ---
+    try:
+        layma_api = f"https://api.layma.net/api/admin/shortlink/quicklink?tokenUser={LAYMA_TOKEN}&format=json&url={target_url}"
+        res_layma = requests.get(layma_api, timeout=10).json()
+        
+        # LayMa trả về success: true và link trong "html"
+        if res_layma.get("success") is True and res_layma.get("html"):
+            final_short_url = res_layma.get("html")
+            print("-> Đã tạo link qua LayMa")
+    except Exception as e:
+        print("Lỗi gọi LayMa:", e)
+
+    # --- 2. NẾU LAYMA LỖI, GỌI LINK4M ---
+    if not final_short_url:
+        print("-> LayMa lỗi, chuyển sang Link4M")
+        try:
+            link4m_api = f"https://link4m.co/api-shorten/v2?api={LINK4M_TOKEN}&url={target_url}"
+            res_link4m = requests.get(link4m_api, timeout=10).json()
+            if res_link4m.get('status') == 'success':
+                final_short_url = res_link4m.get('shortenedUrl')
+        except Exception as e:
+            print("Lỗi gọi Link4M:", e)
+
+    # --- 3. GỬI KẾT QUẢ ---
+    if final_short_url:
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton(f"👉 VƯỢT LINK {links_done + 1}/{req_links}", url=final_short_url))
+        bot.send_message(chat_id, f"Vui lòng vượt link {links_done + 1}/{req_links} bên dưới.", reply_markup=markup)
+    else:
+        bot.send_message(chat_id, "❌ Hệ thống tạo link thất bại (Cả LayMa và Link4M đều lỗi). Vui lòng thử lại sau!")
 
 # ================= HÀM TỰ ĐỘNG XOÁ LỊCH SỬ LÚC 00:00 =================
 def reset_daily_history():
@@ -52,22 +92,6 @@ def receive_update():
         bot.process_new_updates([update])
         return '', 200
     return '', 403
-
-def generate_link4m(chat_id, prod_id, links_done, req_links):
-    unique_token = f"MDUYK-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
-    requests.put(FIREBASE_URL + f"sessions/{chat_id}/active_token.json", json=unique_token)
-    
-    target_url = f"{RENDER_URL}/callback/{chat_id}/{unique_token}"
-    api_url = f"https://link4m.co/api-shorten/v2?api={LINK4M_TOKEN}&url={target_url}"
-    
-    try:
-        res = requests.get(api_url, timeout=10).json()
-        if res.get('status') == 'success':
-            markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton(f"👉 VƯỢT LINK {links_done + 1}/{req_links}", url=res.get('shortenedUrl')))
-            bot.send_message(chat_id, f"Vui lòng vượt link {links_done + 1}/{req_links} bên dưới.", reply_markup=markup)
-    except:
-        bot.send_message(chat_id, "❌ Lỗi tạo link từ Link4M!")
 
 @app.route('/callback/<chat_id>/<token_from_url>', methods=['GET'])
 def link4m_callback(chat_id, token_from_url):
@@ -161,7 +185,6 @@ def handle_admin_actions(call):
         bot.register_next_step_handler(msg, process_add_prod_name)
 
     elif call.data == "admin_add_acc":
-        # HIỂN THỊ DANH SÁCH SẢN PHẨM BẰNG NÚT BẤM
         products = get_products()
         if not products:
             bot.edit_message_text("Kho đang trống, chưa có sản phẩm nào!", call.message.chat.id, call.message.message_id, reply_markup=back_button())
@@ -221,7 +244,7 @@ def handle_admin_actions(call):
         msg = bot.send_message(call.message.chat.id, text, reply_markup=ForceReply(selective=True), parse_mode='Markdown')
         bot.register_next_step_handler(msg, process_edit_prod_settings, prod_id, name)
 
-# Luồng xử lý Admin (Không cần gõ ID/Tên)
+# Luồng xử lý Admin
 def process_add_prod_name(message):
     name = message.text.strip()
     msg = bot.send_message(message.chat.id, f"Đã chọn: {name}\nNhập số link cần vượt (VD: 1):", reply_markup=ForceReply(selective=True))
@@ -358,7 +381,6 @@ def claim_acc(message):
             bot.reply_to(message, "❌ **Bạn đã vượt đủ số lượng hôm nay!**\nVui lòng quay lại sau 00:00 để tiếp tục.")
             return
             
-        # TÍNH 1 LƯỢT VƯỢT KỂ CẢ KHI KHO HẾT HÀNG
         requests.put(FIREBASE_URL + f"history/{chat_id}/{prod_id}/{today}.json", json=claims_today + 1)
         requests.delete(FIREBASE_URL + f"otps/{otp}.json") 
             
