@@ -41,19 +41,26 @@ def generate_link4m(chat_id, prod_id, links_done, req_links):
     
     # --- 1. THỬ GỌI LAYMA TRƯỚC ---
     try:
-        # Gọi API LayMa
         layma_api = f"https://api.layma.net/api/admin/shortlink/quicklink?tokenUser={LAYMA_TOKEN}&format=json&url={target_url}"
-        res_layma = requests.get(layma_api, timeout=10).json()
+        res_layma = requests.get(layma_api, timeout=10)
         
-        # Kiểm tra kết quả trả về
-        if res_layma.get("success") is True and res_layma.get("html"):
-            final_short_url = res_layma.get("html")
-            print("-> Đã tạo link qua LayMa")
+        # KIỂM TRA NỘI DUNG THÔ TRƯỚC KHI PARSE JSON
+        raw_text = res_layma.text.strip()
+        
+        # Nếu LayMa trả về rỗng hoặc bắt đầu bằng '<' (HTML) -> Báo lỗi
+        if not raw_text or raw_text.startswith('<'):
+            bot.send_message(chat_id, f"⚠️ LayMa trả về dữ liệu không hợp lệ:\n`{raw_text[:200]}`\n\nĐang chuyển sang Link4M...", parse_mode='Markdown')
         else:
-            # Báo lỗi ra Telegram để Admin biết
-            bot.send_message(chat_id, f"⚠️ LayMa báo lỗi:\n`{res_layma}`\n\nĐang chuyển sang Link4M...", parse_mode='Markdown')
+            # Thử parse JSON
+            data_layma = res_layma.json()
+            if data_layma.get("success") is True and data_layma.get("html"):
+                final_short_url = data_layma.get("html")
+                print("-> Đã tạo link qua LayMa")
+            else:
+                bot.send_message(chat_id, f"⚠️ LayMa báo lỗi:\n`{data_layma}`\n\nĐang chuyển sang Link4M...", parse_mode='Markdown')
+                
     except Exception as e:
-        bot.send_message(chat_id, f"⚠️ Lỗi kết nối LayMa:\n`{e}`\n\nĐang chuyển sang Link4M...", parse_mode='Markdown')
+        bot.send_message(chat_id, f"⚠️ Lỗi xử lý LayMa:\n`{e}`\n\nĐang chuyển sang Link4M...", parse_mode='Markdown')
 
     # --- 2. NẾU LAYMA LỖI, GỌI LINK4M ---
     if not final_short_url:
