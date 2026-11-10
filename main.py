@@ -12,7 +12,6 @@ from flask import Flask, request
 # ================= CẤU HÌNH =================
 BOT_TOKEN = "8314558446:AAFGz92fVeLdomzfN0EeNZk-HFtDSC8hHEg"
 LINK4M_TOKEN = "699ac288bb556c3eae114a58"
-LAYMA_TOKEN = "b7d4d3eb19b808e8b529f9c13e053c75"
 RENDER_URL = "https://hss-hsha.onrender.com" 
 FIREBASE_URL = "https://shopmduy-default-rtdb.asia-southeast1.firebasedatabase.app/"
 # ============================================
@@ -31,7 +30,7 @@ def get_products():
         return res.json() if res.json() else {}
     except: return {}
 
-# ================= HÀM TẠO LINK (LAYMA -> LINK4M) =================
+# ================= HÀM TẠO LINK =================
 def generate_link4m(chat_id, prod_id, links_done, req_links):
     unique_token = f"MDUYK-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
     requests.put(FIREBASE_URL + f"sessions/{chat_id}/active_token.json", json=unique_token)
@@ -39,47 +38,20 @@ def generate_link4m(chat_id, prod_id, links_done, req_links):
     target_url = f"{RENDER_URL}/callback/{chat_id}/{unique_token}"
     final_short_url = None
     
-    # --- 1. THỬ GỌI LAYMA TRƯỚC ---
     try:
-        layma_api = f"https://api.layma.net/api/admin/shortlink/quicklink?tokenUser={LAYMA_TOKEN}&format=json&url={target_url}"
-        res_layma = requests.get(layma_api, timeout=10)
-        
-        # KIỂM TRA NỘI DUNG THÔ TRƯỚC KHI PARSE JSON
-        raw_text = res_layma.text.strip()
-        
-        # Nếu LayMa trả về rỗng hoặc bắt đầu bằng '<' (HTML) -> Báo lỗi
-        if not raw_text or raw_text.startswith('<'):
-            bot.send_message(chat_id, f"⚠️ LayMa trả về dữ liệu không hợp lệ:\n`{raw_text[:200]}`\n\nĐang chuyển sang Link4M...", parse_mode='Markdown')
-        else:
-            # Thử parse JSON
-            data_layma = res_layma.json()
-            if data_layma.get("success") is True and data_layma.get("html"):
-                final_short_url = data_layma.get("html")
-                print("-> Đã tạo link qua LayMa")
-            else:
-                bot.send_message(chat_id, f"⚠️ LayMa báo lỗi:\n`{data_layma}`\n\nĐang chuyển sang Link4M...", parse_mode='Markdown')
-                
+        link4m_api = f"https://link4m.co/api-shorten/v2?api={LINK4M_TOKEN}&url={target_url}"
+        res_link4m = requests.get(link4m_api, timeout=10).json()
+        if res_link4m.get('status') == 'success':
+            final_short_url = res_link4m.get('shortenedUrl')
     except Exception as e:
-        bot.send_message(chat_id, f"⚠️ Lỗi xử lý LayMa:\n`{e}`\n\nĐang chuyển sang Link4M...", parse_mode='Markdown')
+        print("Lỗi gọi Link4M:", e)
 
-    # --- 2. NẾU LAYMA LỖI, GỌI LINK4M ---
-    if not final_short_url:
-        print("-> LayMa lỗi, chuyển sang Link4M")
-        try:
-            link4m_api = f"https://link4m.co/api-shorten/v2?api={LINK4M_TOKEN}&url={target_url}"
-            res_link4m = requests.get(link4m_api, timeout=10).json()
-            if res_link4m.get('status') == 'success':
-                final_short_url = res_link4m.get('shortenedUrl')
-        except Exception as e:
-            print("Lỗi gọi Link4M:", e)
-
-    # --- 3. GỬI KẾT QUẢ ---
     if final_short_url:
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton(f"👉 VƯỢT LINK {links_done + 1}/{req_links}", url=final_short_url))
         bot.send_message(chat_id, f"Vui lòng vượt link {links_done + 1}/{req_links} bên dưới.", reply_markup=markup)
     else:
-        bot.send_message(chat_id, "❌ Hệ thống tạo link thất bại (Cả LayMa và Link4M đều lỗi). Vui lòng thử lại sau!")
+        bot.send_message(chat_id, "❌ Lỗi tạo link từ Link4M. Vui lòng thử lại sau!")
 
 # ================= HÀM TỰ ĐỘNG XOÁ LỊCH SỬ LÚC 00:00 =================
 def reset_daily_history():
@@ -175,6 +147,10 @@ def admin_main_menu():
         InlineKeyboardButton("📦 Xem Kho Hàng", callback_data="admin_view_stock"),
         InlineKeyboardButton("⚙️ Chỉnh Sửa Sản Phẩm", callback_data="admin_edit_prod_menu")
     )
+    markup.add(
+        InlineKeyboardButton("📊 Thống Kê", callback_data="admin_stats"),
+        InlineKeyboardButton("🔑 Lấy Key", callback_data="admin_get_key")
+    )
     markup.add(InlineKeyboardButton("🔄 Quay Lại", callback_data="admin_back"))
     return markup
 
@@ -198,7 +174,7 @@ def handle_admin_actions(call):
     elif call.data == "admin_add_acc":
         products = get_products()
         if not products:
-            bot.edit_message_text("Kho đang trống, chưa có sản phẩm nào!", call.message.chat.id, call.message.message_id, reply_markup=back_button())
+            bot.edit_message_text("Kho đang trống!", call.message.chat.id, call.message.message_id, reply_markup=back_button())
             return
         markup = InlineKeyboardMarkup()
         for key, data in products.items():
@@ -206,6 +182,27 @@ def handle_admin_actions(call):
             markup.add(InlineKeyboardButton(f"➕ {name}", callback_data=f"admin_select_acc_{key}"))
         markup.add(InlineKeyboardButton("🔙 Quay Lại", callback_data="admin_back"))
         bot.edit_message_text("Bấm chọn sản phẩm muốn thêm Acc:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+    # --- LẤY KEY ---
+    elif call.data == "admin_get_key":
+        products = get_products()
+        if not products:
+            bot.edit_message_text("Kho đang trống!", call.message.chat.id, call.message.message_id, reply_markup=back_button())
+            return
+        markup = InlineKeyboardMarkup()
+        for key, data in products.items():
+            name = data.get("name", key)
+            markup.add(InlineKeyboardButton(f"🔑 {name}", callback_data=f"admin_pick_key_prod_{key}"))
+        markup.add(InlineKeyboardButton("🔙 Quay Lại", callback_data="admin_back"))
+        bot.edit_message_text("Bấm chọn sản phẩm muốn lấy Key:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+    elif call.data.startswith('admin_pick_key_prod_'):
+        prod_id = call.data.split('_', 4)[4]
+        products = get_products()
+        prod_name = products[prod_id].get("name", prod_id)
+        
+        msg = bot.send_message(call.message.chat.id, f"Nhập số lượng Key muốn lấy từ **{prod_name}**:\n(Ví dụ: 1)", reply_markup=ForceReply(selective=True), parse_mode='Markdown')
+        bot.register_next_step_handler(msg, process_get_key_amount, prod_id, prod_name)
 
     elif call.data == "admin_view_stock":
         products = get_products()
@@ -232,6 +229,25 @@ def handle_admin_actions(call):
         markup.add(InlineKeyboardButton("🔙 Quay Lại", callback_data="admin_back"))
         bot.edit_message_text("Chọn sản phẩm muốn chỉnh sửa:", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
+    # --- THỐNG KÊ ---
+    elif call.data == "admin_stats":
+        today = get_today()
+        stats_res = requests.get(FIREBASE_URL + f"stats/{today}.json")
+        data_stats = stats_res.json()
+        
+        if not data_stats:
+            text = f"📊 **THỐNG KÊ HÔM NAY**\n\nHôm nay chưa có ai vượt link."
+        else:
+            total_claims = data_stats.get("total_claims", 0)
+            price_per_claim = 200 # Sửa giá tại đây
+            total_money = total_claims * price_per_claim
+            
+            text = (f"📊 **THỐNG KÊ HÔM NAY**\n\n"
+                    f"👥 Số người vượt: **{len(data_stats) - 1}** người\n"
+                    f"🎯 Tổng số lượt vượt: **{total_claims}** lượt\n"
+                    f"💰 Số tiền nhận được: **{total_money:,} VNĐ**\n\n")
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode='Markdown', reply_markup=back_button())
+
     elif call.data.startswith('admin_select_acc_'):
         prod_id = call.data.split('_', 3)[3]
         products = get_products()
@@ -254,6 +270,38 @@ def handle_admin_actions(call):
                 f"Nhập cài đặt mới: `Số_Link | Số_Lần`")
         msg = bot.send_message(call.message.chat.id, text, reply_markup=ForceReply(selective=True), parse_mode='Markdown')
         bot.register_next_step_handler(msg, process_edit_prod_settings, prod_id, name)
+
+# ================= XỬ LÝ LẤY KEY ADMIN =================
+def process_get_key_amount(message, prod_id, prod_name):
+    try:
+        amount = int(message.text.strip())
+        if amount <= 0: return bot.send_message(message.chat.id, "❌ Số lượng phải lớn hơn 0.", reply_markup=admin_main_menu())
+        
+        res_stock = requests.get(FIREBASE_URL + f"products/{prod_id}/stock.json")
+        stock = res_stock.json()
+        
+        if not stock:
+            return bot.send_message(message.chat.id, "❌ Kho đã hết acc!", reply_markup=admin_main_menu())
+            
+        stock_keys = list(stock.keys())
+        if amount > len(stock_keys):
+            amount = len(stock_keys)
+            bot.send_message(message.chat.id, f"⚠️ Kho chỉ còn {amount} acc. Lấy toàn bộ...")
+            
+        result_text = f"🔑 **Đã lấy {amount} key từ {prod_name}:**\n\n"
+        
+        for i in range(amount):
+            acc_key = stock_keys[i]
+            acc_data = stock[acc_key]
+            result_text += f"`{acc_data['user']} | {acc_data['pass']}`\n"
+            
+            # Xoá khỏi kho
+            requests.delete(FIREBASE_URL + f"products/{prod_id}/stock/{acc_key}.json")
+            
+        bot.send_message(message.chat.id, result_text, parse_mode='Markdown', reply_markup=admin_main_menu())
+        
+    except:
+        bot.send_message(message.chat.id, "❌ Số lượng không hợp lệ.", reply_markup=admin_main_menu())
 
 # Luồng xử lý Admin
 def process_add_prod_name(message):
@@ -394,6 +442,14 @@ def claim_acc(message):
             
         requests.put(FIREBASE_URL + f"history/{chat_id}/{prod_id}/{today}.json", json=claims_today + 1)
         requests.delete(FIREBASE_URL + f"otps/{otp}.json") 
+            
+        stats_res = requests.get(FIREBASE_URL + f"stats/{today}.json")
+        data_stats = stats_res.json() if stats_res.json() else {}
+        total_claims = data_stats.get("total_claims", 0) + 1
+        user_claims = data_stats.get(str(chat_id), 0) + 1
+        data_stats["total_claims"] = total_claims
+        data_stats[str(chat_id)] = user_claims
+        requests.put(FIREBASE_URL + f"stats/{today}.json", json=data_stats)
             
         res_acc = requests.get(FIREBASE_URL + f"products/{prod_id}/stock.json")
         stock = res_acc.json()
