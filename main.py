@@ -30,6 +30,85 @@ def get_products():
         return res.json() if res.json() else {}
     except: return {}
 
+# ================= HÀM TẠO HTML ĐẸP =================
+def render_html_page(title, message, icon, is_success=True):
+    color = "#61c995" if is_success else "#a91f2b" # Xanh hoặc Đỏ
+    icon_html = f"<div style='font-size: 60px; margin-bottom: 20px;'>{icon}</div>"
+    
+    return f"""
+    <!DOCTYPE html>
+    <html lang="vi">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{title}</title>
+        <style>
+            body {{
+                margin: 0;
+                padding: 0;
+                background: #0b090a;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                color: #f6eef0;
+            }}
+            .card {{
+                background: #151113;
+                border: 1px solid #38282d;
+                border-radius: 20px;
+                padding: 40px 30px;
+                text-align: center;
+                max-width: 400px;
+                width: 90%;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+                animation: popIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+                transform: scale(0.9);
+                opacity: 0;
+            }}
+            h1 {{
+                color: {color};
+                font-size: 24px;
+                margin: 0 0 10px 0;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+            }}
+            p {{
+                color: #b7a8ac;
+                font-size: 15px;
+                line-height: 1.6;
+                margin: 0;
+            }}
+            .btn {{
+                display: inline-block;
+                margin-top: 25px;
+                padding: 12px 25px;
+                background: {color};
+                color: #fff;
+                text-decoration: none;
+                border-radius: 10px;
+                font-weight: bold;
+                transition: 0.2s;
+            }}
+            .btn:active {{
+                transform: scale(0.95);
+            }}
+            @keyframes popIn {{
+                to {{ transform: scale(1); opacity: 1; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            {icon_html}
+            <h1>{title}</h1>
+            <p>{message}</p>
+        </div>
+    </body>
+    </html>
+    """
+
 # ================= HÀM TỰ ĐỘNG XOÁ LỊCH SỬ LÚC 00:00 =================
 def reset_daily_history():
     while True:
@@ -79,7 +158,13 @@ def link4m_callback(chat_id, token_from_url):
         if session:
             saved_token = session.get("active_token")
             if saved_token != token_from_url:
-                return "<html><body style='background:#0b090a;color:#f6eef0;text-align:center;padding-top:50px;'><h2 style='color:#a91f2b;'>LỖI XÁC THỰC</h2></body></html>", 403
+                # TRANG BÁO LỖI XÁC THỰC (F5)
+                return render_html_page(
+                    title="Lỗi Xác Thực", 
+                    message="Link này đã được sử dụng hoặc không hợp lệ. Vui lòng không tải lại trang (F5).", 
+                    icon="⚠️", 
+                    is_success=False
+                ), 403
             
             requests.delete(FIREBASE_URL + f"sessions/{chat_id}/active_token.json")
             links_done = session.get("links_done", 0) + 1
@@ -96,11 +181,25 @@ def link4m_callback(chat_id, token_from_url):
                        f"`/claim {otp}`\n\n"
                        f"*(Mã này sẽ hết hạn sau 5 phút)*")
                 bot.send_message(chat_id, msg, parse_mode='Markdown')
-                return "<html><body style='background:#0b090a;color:#61c995;text-align:center;padding-top:50px;'><h2>THÀNH CÔNG!</h2></body></html>", 200
+                
+                # TRANG BÁO THÀNH CÔNG
+                return render_html_page(
+                    title="Thành Công", 
+                    message="Bạn đã hoàn thành tất cả nhiệm vụ. Vui lòng quay lại Telegram để nhận mã OTP và lấy tài khoản!", 
+                    icon="🎉", 
+                    is_success=True
+                ), 200
             else:
                 requests.put(FIREBASE_URL + f"sessions/{chat_id}/links_done.json", json=links_done)
                 generate_link4m(chat_id, prod_id, links_done, req_links)
-                return f"<html><body style='background:#0b090a;color:#61c995;text-align:center;padding-top:50px;'><h2>ĐÃ XÁC NHẬN {links_done}/{req_links}</h2></body></html>", 200
+                
+                # TRANG BÁO ĐÃ XÁC NHẬN LINK (CÒN LINK TIẾP THEO)
+                return render_html_page(
+                    title=f"Đã Xác Nhận {links_done}/{req_links}", 
+                    message="Bạn cần vượt thêm link nữa. Vui lòng quay lại Telegram để làm tiếp nhiệm vụ.", 
+                    icon="✅", 
+                    is_success=True
+                ), 200
         return "Session not found", 404
     except Exception as e:
         return "Error", 500
@@ -137,7 +236,7 @@ def admin_main_menu():
         InlineKeyboardButton("➕ Thêm Acc", callback_data="admin_add_acc")
     )
     markup.add(
-        InlineKeyboardButton("📤 Lấy Key", callback_data="admin_get_key_menu"), # NÚT MỚI
+        InlineKeyboardButton("📤 Lấy Key", callback_data="admin_get_key_menu"),
         InlineKeyboardButton("📦 Xem Kho Hàng", callback_data="admin_view_stock")
     )
     markup.add(
@@ -175,7 +274,6 @@ def handle_admin_actions(call):
         markup.add(InlineKeyboardButton("🔙 Quay Lại", callback_data="admin_back"))
         bot.edit_message_text("Bấm chọn sản phẩm muốn thêm Acc:", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
-    # LOGIC LẤY KEY MỚI
     elif call.data == "admin_get_key_menu":
         products = get_products()
         if not products:
@@ -250,7 +348,6 @@ def process_take_keys(message, prod_id, prod_name):
         amount = int(message.text.strip())
         if amount <= 0: raise ValueError
         
-        # Lấy dữ liệu kho
         res = requests.get(FIREBASE_URL + f"products/{prod_id}/stock.json")
         stock = res.json()
         
@@ -258,7 +355,6 @@ def process_take_keys(message, prod_id, prod_name):
             bot.send_message(message.chat.id, f"❌ Sản phẩm `{prod_name}` đã hết acc trong kho!", reply_markup=admin_main_menu())
             return
             
-        # Lấy ra số lượng acc theo yêu cầu
         keys_to_remove = list(stock.keys())[:amount]
         taken_accs = []
         
