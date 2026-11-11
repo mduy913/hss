@@ -30,10 +30,22 @@ def get_products():
         return res.json() if res.json() else {}
     except: return {}
 
-# ================= HÀM TẠO HTML ĐẸP =================
-def render_html_page(title, message, icon, is_success=True):
-    color = "#61c995" if is_success else "#a91f2b" # Xanh hoặc Đỏ
-    icon_html = f"<div style='font-size: 60px; margin-bottom: 20px;'>{icon}</div>"
+# Hàm lấy avatar bot (mặc định là con mèo nếu chưa cài)
+def get_avatar_url():
+    try:
+        res = requests.get(FIREBASE_URL + "settings/avatar.json")
+        data = res.json()
+        if data and isinstance(data, str):
+            return data
+    except:
+        pass
+    # Ảnh con mèo mặc định giống ảnh của bạn
+    return "https://i.imgur.com/V3Y6p2w.jpeg" 
+
+# ================= GIAO DIỆN HTML ĐẸP =================
+def render_loading_page(title, message, is_success=True):
+    avatar_url = get_avatar_url()
+    color = "#61c995" if is_success else "#a91f2b"
     
     return f"""
     <!DOCTYPE html>
@@ -44,66 +56,56 @@ def render_html_page(title, message, icon, is_success=True):
         <title>{title}</title>
         <style>
             body {{
-                margin: 0;
-                padding: 0;
-                background: #0b090a;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                height: 100vh;
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                color: #f6eef0;
+                margin: 0; padding: 0; background: #0b090a;
+                display: flex; justify-content: center; align-items: center;
+                height: 100vh; font-family: 'Segoe UI', sans-serif;
+                color: #f6eef0; overflow: hidden;
             }}
-            .card {{
-                background: #151113;
-                border: 1px solid #38282d;
-                border-radius: 20px;
-                padding: 40px 30px;
-                text-align: center;
-                max-width: 400px;
-                width: 90%;
-                box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-                animation: popIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
-                transform: scale(0.9);
-                opacity: 0;
+            .container {{ text-align: center; }}
+            
+            /* Hiệu ứng vòng tròn quay */
+            .loader-wrapper {{
+                position: relative; width: 150px; height: 150px; margin: 0 auto 20px auto;
             }}
-            h1 {{
-                color: {color};
-                font-size: 24px;
-                margin: 0 0 10px 0;
-                text-transform: uppercase;
-                letter-spacing: 1px;
+            .loader-ring {{
+                position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+                border: 4px solid transparent;
+                border-top-color: #f6eef0;
+                border-right-color: #f6eef0;
+                border-radius: 50%;
+                animation: spin 1s linear infinite;
             }}
-            p {{
-                color: #b7a8ac;
-                font-size: 15px;
-                line-height: 1.6;
-                margin: 0;
+            .avatar {{
+                position: absolute; top: 10px; left: 10px; width: 130px; height: 130px;
+                border-radius: 50%; object-fit: cover;
+                border: 2px solid #38282d;
+                box-shadow: 0 0 20px rgba(255,255,255,0.1);
             }}
-            .btn {{
-                display: inline-block;
-                margin-top: 25px;
-                padding: 12px 25px;
-                background: {color};
-                color: #fff;
-                text-decoration: none;
-                border-radius: 10px;
-                font-weight: bold;
-                transition: 0.2s;
+            @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
+            
+            h1 {{ font-size: 28px; margin: 10px 0; letter-spacing: 2px; text-transform: uppercase; color: {color}; }}
+            p {{ color: #b7a8ac; font-size: 15px; margin-bottom: 30px; }}
+            .progress-bar {{
+                width: 200px; height: 4px; background: #38282d; margin: 0 auto; border-radius: 2px;
+                position: relative; overflow: hidden;
             }}
-            .btn:active {{
-                transform: scale(0.95);
+            .progress-bar::after {{
+                content: ''; position: absolute; top: 0; left: -50%; width: 50%; height: 100%;
+                background: #f6eef0; border-radius: 2px;
+                animation: loading 1.5s infinite;
             }}
-            @keyframes popIn {{
-                to {{ transform: scale(1); opacity: 1; }}
-            }}
+            @keyframes loading {{ 0% {{ left: -50%; }} 100% {{ left: 100%; }} }}
         </style>
     </head>
     <body>
-        <div class="card">
-            {icon_html}
+        <div class="container">
+            <div class="loader-wrapper">
+                <div class="loader-ring"></div>
+                <img src="{avatar_url}" class="avatar" alt="Avatar">
+            </div>
             <h1>{title}</h1>
             <p>{message}</p>
+            <div class="progress-bar"></div>
         </div>
     </body>
     </html>
@@ -158,13 +160,7 @@ def link4m_callback(chat_id, token_from_url):
         if session:
             saved_token = session.get("active_token")
             if saved_token != token_from_url:
-                # TRANG BÁO LỖI XÁC THỰC (F5)
-                return render_html_page(
-                    title="Lỗi Xác Thực", 
-                    message="Link này đã được sử dụng hoặc không hợp lệ. Vui lòng không tải lại trang (F5).", 
-                    icon="⚠️", 
-                    is_success=False
-                ), 403
+                return render_loading_page("Lỗi Xác Thực", "Link đã dùng hoặc không hợp lệ.", is_success=False), 403
             
             requests.delete(FIREBASE_URL + f"sessions/{chat_id}/active_token.json")
             links_done = session.get("links_done", 0) + 1
@@ -182,27 +178,35 @@ def link4m_callback(chat_id, token_from_url):
                        f"*(Mã này sẽ hết hạn sau 5 phút)*")
                 bot.send_message(chat_id, msg, parse_mode='Markdown')
                 
-                # TRANG BÁO THÀNH CÔNG
-                return render_html_page(
-                    title="Thành Công", 
-                    message="Bạn đã hoàn thành tất cả nhiệm vụ. Vui lòng quay lại Telegram để nhận mã OTP và lấy tài khoản!", 
-                    icon="🎉", 
-                    is_success=True
-                ), 200
+                return render_loading_page("Thành Công", "Vui lòng quay lại Telegram để nhận mã OTP.", is_success=True), 200
             else:
                 requests.put(FIREBASE_URL + f"sessions/{chat_id}/links_done.json", json=links_done)
                 generate_link4m(chat_id, prod_id, links_done, req_links)
                 
-                # TRANG BÁO ĐÃ XÁC NHẬN LINK (CÒN LINK TIẾP THEO)
-                return render_html_page(
-                    title=f"Đã Xác Nhận {links_done}/{req_links}", 
-                    message="Bạn cần vượt thêm link nữa. Vui lòng quay lại Telegram để làm tiếp nhiệm vụ.", 
-                    icon="✅", 
-                    is_success=True
-                ), 200
+                return render_loading_page(f"Đã Xác Nhận {links_done}/{req_links}", "Vui lòng quay lại Telegram để làm tiếp.", is_success=True), 200
         return "Session not found", 404
     except Exception as e:
         return "Error", 500
+
+# ================= UPLOAD AVATAR LÊN IMGUR =================
+def upload_to_imgur(file_id):
+    try:
+        # Lấy link file từ Telegram
+        file_info = bot.get_file(file_id)
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
+        
+        # Tải file về
+        img_data = requests.get(file_url).content
+        
+        # Up lên Imgur (Dùng Client ID công khai, bạn có thể tạo riêng)
+        headers = {'Authorization': 'Client-ID 546c25a59c58ad7'} 
+        res = requests.post('https://api.imgur.com/3/image', headers=headers, files={'image': img_data})
+        if res.status_code == 200:
+            return res.json()['data']['link']
+        return None
+    except Exception as e:
+        print("Lỗi up ảnh:", e)
+        return None
 
 # ================= GIAO DIỆN CHUNG =================
 @bot.message_handler(commands=['start'])
@@ -228,7 +232,7 @@ def send_welcome(message):
         markup.add(InlineKeyboardButton("🛒 CHỌN SẢN PHẨM", callback_data="user_products"))
         bot.send_message(chat_id, "Chào mừng bạn! Hãy chọn sản phẩm.", reply_markup=markup)
 
-# --- MENU ADMIN ---
+# --- MENU ADMIN (Thêm nút Đổi Avatar) ---
 def admin_main_menu():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -240,7 +244,8 @@ def admin_main_menu():
         InlineKeyboardButton("📦 Xem Kho Hàng", callback_data="admin_view_stock")
     )
     markup.add(
-        InlineKeyboardButton("⚙️ Chỉnh Sửa Sản Phẩm", callback_data="admin_edit_prod_menu")
+        InlineKeyboardButton("⚙️ Chỉnh Sửa Sản Phẩm", callback_data="admin_edit_prod_menu"),
+        InlineKeyboardButton("🖼️ Đổi Avatar Web", callback_data="admin_change_avatar") # NÚT MỚI
     )
     markup.add(InlineKeyboardButton("🔄 Quay Lại", callback_data="admin_back"))
     return markup
@@ -258,6 +263,10 @@ def handle_admin_actions(call):
     if call.data == "admin_back":
         bot.edit_message_text("Chào Admin! Bấm nút bên dưới để quản lý.", call.message.chat.id, call.message.message_id, reply_markup=admin_main_menu())
 
+    elif call.data == "admin_change_avatar":
+        msg = bot.send_message(call.message.chat.id, "Vui lòng gửi **1 bức ảnh** để làm Avatar cho Web (Nên dùng ảnh vuông):", parse_mode='Markdown')
+        bot.register_next_step_handler(msg, process_change_avatar)
+
     elif call.data == "admin_add_prod":
         msg = bot.send_message(call.message.chat.id, "Nhập tên sản phẩm:", reply_markup=ForceReply(selective=True))
         bot.register_next_step_handler(msg, process_add_prod_name)
@@ -265,7 +274,7 @@ def handle_admin_actions(call):
     elif call.data == "admin_add_acc":
         products = get_products()
         if not products:
-            bot.edit_message_text("Kho đang trống, chưa có sản phẩm nào!", call.message.chat.id, call.message.message_id, reply_markup=back_button())
+            bot.edit_message_text("Kho đang trống!", call.message.chat.id, call.message.message_id, reply_markup=back_button())
             return
         markup = InlineKeyboardMarkup()
         for key, data in products.items():
@@ -277,7 +286,7 @@ def handle_admin_actions(call):
     elif call.data == "admin_get_key_menu":
         products = get_products()
         if not products:
-            bot.edit_message_text("Kho đang trống, chưa có sản phẩm nào!", call.message.chat.id, call.message.message_id, reply_markup=back_button())
+            bot.edit_message_text("Kho đang trống!", call.message.chat.id, call.message.message_id, reply_markup=back_button())
             return
         markup = InlineKeyboardMarkup()
         for key, data in products.items():
@@ -342,34 +351,43 @@ def handle_admin_actions(call):
         msg = bot.send_message(call.message.chat.id, text, reply_markup=ForceReply(selective=True), parse_mode='Markdown')
         bot.register_next_step_handler(msg, process_edit_prod_settings, prod_id, name)
 
-# Luồng xử lý Admin
+# Luồng xử lý Đổi Avatar
+def process_change_avatar(message):
+    if message.content_type == 'photo':
+        msg = bot.reply_to(message, "⏳ Đang xử lý ảnh...")
+        
+        # Lấy ảnh chất lượng cao nhất
+        file_id = message.photo[-1].file_id
+        imgur_url = upload_to_imgur(file_id)
+        
+        if imgur_url:
+            requests.put(FIREBASE_URL + "settings/avatar.json", json=imgur_url)
+            bot.edit_message_text("✅ Đã cập nhật Avatar Web thành công!", message.chat.id, msg.message_id)
+        else:
+            bot.edit_message_text("❌ Lỗi khi tải ảnh lên máy chủ. Thử lại sau!", message.chat.id, msg.message_id)
+    else:
+        bot.reply_to(message, "❌ Vui lòng gửi 1 bức ảnh, không phải file hay văn bản.", reply_markup=admin_main_menu())
+
+# Luồng xử lý Admin khác
 def process_take_keys(message, prod_id, prod_name):
     try:
         amount = int(message.text.strip())
         if amount <= 0: raise ValueError
-        
         res = requests.get(FIREBASE_URL + f"products/{prod_id}/stock.json")
         stock = res.json()
-        
         if not stock:
-            bot.send_message(message.chat.id, f"❌ Sản phẩm `{prod_name}` đã hết acc trong kho!", reply_markup=admin_main_menu())
+            bot.send_message(message.chat.id, f"❌ Sản phẩm `{prod_name}` đã hết acc!", reply_markup=admin_main_menu())
             return
-            
         keys_to_remove = list(stock.keys())[:amount]
         taken_accs = []
-        
         for k in keys_to_remove:
             taken_accs.append(f"{stock[k]['user']} | {stock[k]['pass']}")
             requests.delete(FIREBASE_URL + f"products/{prod_id}/stock/{k}.json")
-            
         text = f"✅ **Đã lấy {len(taken_accs)} Key từ {prod_name}:**\n\n"
-        for acc in taken_accs:
-            text += f"`{acc}`\n"
-        
+        for acc in taken_accs: text += f"`{acc}`\n"
         bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=admin_main_menu())
-        
     except ValueError:
-        bot.send_message(message.chat.id, "❌ Số lượng không hợp lệ. Hủy thao tác.", reply_markup=admin_main_menu())
+        bot.send_message(message.chat.id, "❌ Số lượng không hợp lệ.", reply_markup=admin_main_menu())
 
 def process_add_prod_name(message):
     name = message.text.strip()
