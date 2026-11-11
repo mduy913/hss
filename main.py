@@ -455,7 +455,7 @@ def claim_acc(message):
         stock = res_acc.json()
         
         if not stock:
-            bot.reply_to(message, "❌ Kho đã hết tài khoản! Lượt vượt của bạn hôm nay đã bị trừ. Vui lòng liên hệ @mduyk để hỗ trợ.")
+            bot.reply_to(message, "❌ Kho đã hết tài khoản! Lượt vượt của bạn hôm nay đã bị trừ. vui lòng quay lại vào ngày mai! nếu bạn vượt link clon hãy liên hệ đến @mduyk để nhận")
             return
             
         acc_key = list(stock.keys())[0]
