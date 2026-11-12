@@ -210,7 +210,7 @@ def link4m_callback(chat_id, token_from_url):
                 
                 msg = (f"🎉 **VƯỢT LINK THÀNH CÔNG!**\n\n"
                        f"Hãy quay lại trang Web vừa mở để lấy mã OTP.\n"
-                       f"Sau đó chỉ cần **dán mã OTP** vào đây là Bot tự động gửi Acc (Không cần gõ /claim).")
+                       f"Sau đó chỉ cần **dán mã OTP** vào đây.")
                 bot.send_message(chat_id, msg, parse_mode='Markdown')
                 
                 return render_success_page(otp), 200
