@@ -40,10 +40,11 @@ def get_avatar_url():
         pass
     return "https://i.imgur.com/V3Y6p2w.jpeg" 
 
-# ================= GIAO DIỆN HTML (CÓ THANH TIẾN TRÌNH VÀ COPY MÃ) =================
+# ================= GIAO DIỆN HTML (SỬA LỖI NGOẶC) =================
 def render_success_page(otp_code):
     avatar_url = get_avatar_url()
-    return f"""
+    # Dùng replace để tránh lỗi cú pháp f-string trong CSS
+    html_template = """
     <!DOCTYPE html>
     <html lang="vi">
     <head>
@@ -51,63 +52,29 @@ def render_success_page(otp_code):
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Nhận Mã OTP</title>
         <style>
-            body {{
-                margin: 0; padding: 0; background: #0b090a;
-                display: flex; justify-content: center; align-items: center;
-                height: 100vh; font-family: 'Segoe UI', sans-serif;
-                color: #f6eef0; overflow: hidden;
-            }}
-            .container {{ text-align: center; }}
-            .loader-wrapper {{ position: relative; width: 120px; height: 120px; margin: 0 auto 20px auto; }}
-            .loader-ring {{
-                position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-                border: 4px solid transparent; border-top-color: #f6eef0; border-right-color: #f6eef0;
-                border-radius: 50%; animation: spin 1s linear infinite;
-            }}
-            .avatar {{
-                position: absolute; top: 10px; left: 10px; width: 100px; height: 100px;
-                border-radius: 50%; object-fit: cover; border: 2px solid #38282d;
-            }}
-            @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
-            
-            h1 {{ font-size: 24px; margin: 10px 0; letter-spacing: 1px; text-transform: uppercase; color: #61c995; }}
-            p {{ color: #b7a8ac; font-size: 14px; margin-bottom: 20px; }}
-            
-            /* Thanh tiến trình */
-            .progress-container {{
-                width: 250px; height: 10px; background: #38282d; border-radius: 5px;
-                margin: 20px auto; overflow: hidden; display: none;
-            }}
-            .progress-bar {{
-                height: 100%; width: 0%; background: #61c995;
-                transition: width 0.1s linear; border-radius: 5px;
-            }}
-            .progress-text {{ font-size: 14px; color: #61c995; margin-bottom: 20px; display: none; }}
-
-            /* Khung chứa mã OTP */
-            .otp-box {{
-                display: none; margin-top: 20px; animation: fadeIn 0.5s;
-            }}
-            .otp-code {{
-                font-size: 32px; font-weight: bold; letter-spacing: 5px;
-                color: #f6eef0; margin: 15px 0; padding: 15px;
-                background: #151113; border: 2px dashed #61c995; border-radius: 10px;
-            }}
-            .copy-btn {{
-                background: #61c995; color: #000; border: none; padding: 12px 30px;
-                font-size: 16px; font-weight: bold; border-radius: 8px; cursor: pointer;
-                transition: 0.2s; width: 80%;
-            }}
-            .copy-btn:active {{ transform: scale(0.95); }}
-            
-            @keyframes fadeIn {{ from {{ opacity: 0; transform: translateY(10px); }} to {{ opacity: 1; transform: translateY(0); }} }}
+            body { margin: 0; padding: 0; background: #0b090a; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: 'Segoe UI', sans-serif; color: #f6eef0; overflow: hidden; }
+            .container { text-align: center; }
+            .loader-wrapper { position: relative; width: 120px; height: 120px; margin: 0 auto 20px auto; }
+            .loader-ring { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 4px solid transparent; border-top-color: #f6eef0; border-right-color: #f6eef0; border-radius: 50%; animation: spin 1s linear infinite; }
+            .avatar { position: absolute; top: 10px; left: 10px; width: 100px; height: 100px; border-radius: 50%; object-fit: cover; border: 2px solid #38282d; }
+            @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+            h1 { font-size: 24px; margin: 10px 0; letter-spacing: 1px; text-transform: uppercase; color: #61c995; }
+            p { color: #b7a8ac; font-size: 14px; margin-bottom: 20px; }
+            .progress-container { width: 250px; height: 10px; background: #38282d; border-radius: 5px; margin: 20px auto; overflow: hidden; display: none; }
+            .progress-bar { height: 100%; width: 0%; background: #61c995; transition: width 0.1s linear; border-radius: 5px; }
+            .progress-text { font-size: 14px; color: #61c995; margin-bottom: 20px; display: none; }
+            .otp-box { display: none; margin-top: 20px; animation: fadeIn 0.5s; }
+            .otp-code { font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #f6eef0; margin: 15px 0; padding: 15px; background: #151113; border: 2px dashed #61c995; border-radius: 10px; }
+            .copy-btn { background: #61c995; color: #000; border: none; padding: 12px 30px; font-size: 16px; font-weight: bold; border-radius: 8px; cursor: pointer; transition: 0.2s; width: 80%; }
+            .copy-btn:active { transform: scale(0.95); }
+            @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         </style>
     </head>
     <body>
         <div class="container">
             <div class="loader-wrapper" id="loader">
                 <div class="loader-ring"></div>
-                <img src="{avatar_url}" class="avatar" alt="Avatar">
+                <img src="AVATAR_URL" class="avatar" alt="Avatar">
             </div>
             
             <h1 id="status-title">Đang Xử Lý...</h1>
@@ -120,7 +87,7 @@ def render_success_page(otp_code):
 
             <div class="otp-box" id="otp-box">
                 <p style="color:#f6eef0;">Mã nhận Acc của bạn là:</p>
-                <div class="otp-code" id="otp-text">{otp_code}</div>
+                <div class="otp-code" id="otp-text">OTP_CODE</div>
                 <button class="copy-btn" onclick="copyCode()">📋 SAO CHÉP MÃ</button>
                 <p style="margin-top:15px; font-size:12px;">Sao chép mã và dán vào Telegram để nhận Acc!</p>
             </div>
@@ -140,9 +107,8 @@ def render_success_page(otp_code):
             progressText.style.display = 'block';
             statusTitle.innerText = "Đang Tạo Mã...";
 
-            // Chạy thanh tiến trình
             let interval = setInterval(() => {
-                progress += Math.floor(Math.random() * 10) + 2; // Tăng ngẫu nhiên 2-12%
+                progress += Math.floor(Math.random() * 10) + 2;
                 if (progress > 100) progress = 100;
                 
                 progressBar.style.width = progress + '%';
@@ -151,7 +117,6 @@ def render_success_page(otp_code):
                 if (progress === 100) {
                     clearInterval(interval);
                     setTimeout(() => {
-                        // Ẩn loading, hiện mã OTP
                         loader.style.display = 'none';
                         statusTitle.innerText = "THÀNH CÔNG!";
                         statusTitle.style.color = "#61c995";
@@ -163,7 +128,7 @@ def render_success_page(otp_code):
                 }
             }, 100);
 
-            function copyCode() {{
+            function copyCode() {
                 const code = document.getElementById('otp-text').innerText;
                 navigator.clipboard.writeText(code).then(() => {
                     const btn = document.querySelector('.copy-btn');
@@ -174,11 +139,14 @@ def render_success_page(otp_code):
                         btn.style.background = '#61c995';
                     } , 2000);
                 });
-            }}
+            }
         </script>
     </body>
     </html>
     """
+    html_template = html_template.replace("AVATAR_URL", avatar_url)
+    html_template = html_template.replace("OTP_CODE", otp_code)
+    return html_template
 
 # ================= HÀM TỰ ĐỘNG XOÁ LỊCH SỬ LÚC 00:00 =================
 def reset_daily_history():
@@ -241,19 +209,16 @@ def link4m_callback(chat_id, token_from_url):
                 requests.put(FIREBASE_URL + f"otps/{otp}.json", json={"chat_id": chat_id, "product_id": prod_id})
                 requests.delete(FIREBASE_URL + f"sessions/{chat_id}.json")
                 
-                # GỬI TIN NHẮN NHẮC KHÁCH (KHÔNG CẦN /CLAIM)
                 msg = (f"🎉 **VƯỢT LINK THÀNH CÔNG!**\n\n"
                        f"Hãy quay lại trang Web vừa mở để lấy mã OTP.\n"
                        f"Sau đó chỉ cần **dán mã OTP** vào đây là Bot tự động gửi Acc (Không cần gõ /claim).")
                 bot.send_message(chat_id, msg, parse_mode='Markdown')
                 
-                # TRẢ VỀ TRANG HTML CÓ THANH TIẾN TRÌNH VÀ MÃ OTP
                 return render_success_page(otp), 200
             else:
                 requests.put(FIREBASE_URL + f"sessions/{chat_id}/links_done.json", json=links_done)
                 generate_link4m(chat_id, prod_id, links_done, req_links)
                 
-                # NẾU CHƯA ĐỦ LINK, TRẢ VỀ TRANG CŨ
                 html_wait = f"""
                 <html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
                 <body style="background:#0b090a;color:#61c995;text-align:center;padding-top:50px;font-family:sans-serif;">
@@ -558,13 +523,12 @@ def buy_product(call):
     except Exception as e:
         print("Lỗi nút bấm:", e)
 
-# ================= TỰ ĐỘNG NHẬN DIỆN OTP (KHÔNG CẦN /CLAIM) =================
+# ================= TỰ ĐỘNG NHẬN DIỆN OTP =================
 @bot.message_handler(func=lambda message: True)
 def handle_all_messages(message):
     chat_id = message.chat.id
     text = message.text.strip()
     
-    # Nếu tin nhắn là mã OTP 6 số
     if text.isdigit() and len(text) == 6:
         res = requests.get(FIREBASE_URL + f"otps/{text}.json")
         session = res.json()
