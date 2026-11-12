@@ -30,7 +30,7 @@ def get_products():
         return res.json() if res.json() else {}
     except: return {}
 
-# Hàm lấy avatar bot (mặc định là con mèo nếu chưa cài)
+# Hàm lấy avatar bot
 def get_avatar_url():
     try:
         res = requests.get(FIREBASE_URL + "settings/avatar.json")
@@ -39,13 +39,13 @@ def get_avatar_url():
             return data
     except:
         pass
-    # Ảnh con mèo mặc định giống ảnh của bạn
     return "https://i.imgur.com/V3Y6p2w.jpeg" 
 
-# ================= GIAO DIỆN HTML ĐẸP =================
+# ================= GIAO DIỆN HTML SIÊU ĐẸP =================
 def render_loading_page(title, message, is_success=True):
     avatar_url = get_avatar_url()
     color = "#61c995" if is_success else "#a91f2b"
+    icon = "✔" if is_success else "✖"
     
     return f"""
     <!DOCTYPE html>
@@ -61,52 +61,61 @@ def render_loading_page(title, message, is_success=True):
                 height: 100vh; font-family: 'Segoe UI', sans-serif;
                 color: #f6eef0; overflow: hidden;
             }}
-            .container {{ text-align: center; }}
+            .container {{ text-align: center; position: relative; }}
             
-            /* Hiệu ứng vòng tròn quay */
+            /* Vòng xoay */
             .loader-wrapper {{
                 position: relative; width: 150px; height: 150px; margin: 0 auto 20px auto;
             }}
             .loader-ring {{
                 position: absolute; top: 0; left: 0; width: 100%; height: 100%;
                 border: 4px solid transparent;
-                border-top-color: #f6eef0;
-                border-right-color: #f6eef0;
-                border-radius: 50%;
-                animation: spin 1s linear infinite;
+                border-top-color: #f6eef0; border-right-color: #f6eef0;
+                border-radius: 50%; animation: spin 1s linear infinite;
+                transition: opacity 0.5s;
             }}
             .avatar {{
                 position: absolute; top: 10px; left: 10px; width: 130px; height: 130px;
-                border-radius: 50%; object-fit: cover;
-                border: 2px solid #38282d;
-                box-shadow: 0 0 20px rgba(255,255,255,0.1);
+                border-radius: 50%; object-fit: cover; border: 2px solid #38282d;
+                transition: all 0.5s;
             }}
+            
+            /* Dấu tích hiện ra khi thành công */
+            .checkmark {{
+                position: absolute; top: 10px; left: 10px; width: 130px; height: 130px;
+                background: {color}; border-radius: 50%; display: flex;
+                justify-content: center; align-items: center;
+                font-size: 70px; color: white; opacity: 0;
+                transform: scale(0.5); transition: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            }}
+            
             @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
             
-            h1 {{ font-size: 28px; margin: 10px 0; letter-spacing: 2px; text-transform: uppercase; color: {color}; }}
-            p {{ color: #b7a8ac; font-size: 15px; margin-bottom: 30px; }}
-            .progress-bar {{
-                width: 200px; height: 4px; background: #38282d; margin: 0 auto; border-radius: 2px;
-                position: relative; overflow: hidden;
-            }}
-            .progress-bar::after {{
-                content: ''; position: absolute; top: 0; left: -50%; width: 50%; height: 100%;
-                background: #f6eef0; border-radius: 2px;
-                animation: loading 1.5s infinite;
-            }}
-            @keyframes loading {{ 0% {{ left: -50%; }} 100% {{ left: 100%; }} }}
+            h1 {{ font-size: 28px; margin: 10px 0; letter-spacing: 2px; text-transform: uppercase; color: {color}; opacity: 0; transition: 0.5s; }}
+            p {{ color: #b7a8ac; font-size: 15px; margin-bottom: 20px; opacity: 0; transition: 0.5s; }}
+            
+            .success-state .loader-ring {{ opacity: 0; }}
+            .success-state .checkmark {{ opacity: 1; transform: scale(1); }}
+            .success-state h1, .success-state p {{ opacity: 1; }}
         </style>
     </head>
     <body>
-        <div class="container">
+        <div class="container" id="container">
             <div class="loader-wrapper">
                 <div class="loader-ring"></div>
                 <img src="{avatar_url}" class="avatar" alt="Avatar">
+                <div class="checkmark">{icon}</div>
             </div>
             <h1>{title}</h1>
             <p>{message}</p>
-            <div class="progress-bar"></div>
         </div>
+
+        <script>
+            // Đợi 1.5 giây để tạo hiệu ứng "Đang xác nhận..." rồi mới biến thành "Thành công"
+            setTimeout(function() {{
+                document.getElementById('container').classList.add('success-state');
+            }}, 1500);
+        </script>
     </body>
     </html>
     """
@@ -120,9 +129,9 @@ def reset_daily_history():
         time.sleep(seconds_until_midnight) 
         try:
             requests.delete(FIREBASE_URL + "history.json")
-            print("-> Đã reset toàn bộ lịch sử lấy acc lúc 00:00")
+            print("-> Đã reset lịch sử lúc 00:00")
         except Exception as e:
-            print("Lỗi reset history:", e)
+            print("Lỗi reset:", e)
 
 # ================= WEBHOOKS =================
 @app.route(f'/{BOT_TOKEN}', methods=['POST'])
@@ -188,24 +197,18 @@ def link4m_callback(chat_id, token_from_url):
     except Exception as e:
         return "Error", 500
 
-# ================= UPLOAD AVATAR LÊN IMGUR =================
+# ================= UPLOAD AVATAR =================
 def upload_to_imgur(file_id):
     try:
-        # Lấy link file từ Telegram
         file_info = bot.get_file(file_id)
         file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
-        
-        # Tải file về
         img_data = requests.get(file_url).content
-        
-        # Up lên Imgur (Dùng Client ID công khai, bạn có thể tạo riêng)
         headers = {'Authorization': 'Client-ID 546c25a59c58ad7'} 
         res = requests.post('https://api.imgur.com/3/image', headers=headers, files={'image': img_data})
         if res.status_code == 200:
             return res.json()['data']['link']
         return None
     except Exception as e:
-        print("Lỗi up ảnh:", e)
         return None
 
 # ================= GIAO DIỆN CHUNG =================
@@ -232,7 +235,7 @@ def send_welcome(message):
         markup.add(InlineKeyboardButton("🛒 CHỌN SẢN PHẨM", callback_data="user_products"))
         bot.send_message(chat_id, "Chào mừng bạn! Hãy chọn sản phẩm.", reply_markup=markup)
 
-# --- MENU ADMIN (Thêm nút Đổi Avatar) ---
+# --- MENU ADMIN ---
 def admin_main_menu():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -245,7 +248,7 @@ def admin_main_menu():
     )
     markup.add(
         InlineKeyboardButton("⚙️ Chỉnh Sửa Sản Phẩm", callback_data="admin_edit_prod_menu"),
-        InlineKeyboardButton("🖼️ Đổi Avatar Web", callback_data="admin_change_avatar") # NÚT MỚI
+        InlineKeyboardButton("🖼️ Đổi Avatar Web", callback_data="admin_change_avatar")
     )
     markup.add(InlineKeyboardButton("🔄 Quay Lại", callback_data="admin_back"))
     return markup
@@ -355,8 +358,6 @@ def handle_admin_actions(call):
 def process_change_avatar(message):
     if message.content_type == 'photo':
         msg = bot.reply_to(message, "⏳ Đang xử lý ảnh...")
-        
-        # Lấy ảnh chất lượng cao nhất
         file_id = message.photo[-1].file_id
         imgur_url = upload_to_imgur(file_id)
         
@@ -364,11 +365,11 @@ def process_change_avatar(message):
             requests.put(FIREBASE_URL + "settings/avatar.json", json=imgur_url)
             bot.edit_message_text("✅ Đã cập nhật Avatar Web thành công!", message.chat.id, msg.message_id)
         else:
-            bot.edit_message_text("❌ Lỗi khi tải ảnh lên máy chủ. Thử lại sau!", message.chat.id, msg.message_id)
+            bot.edit_message_text("❌ Lỗi khi tải ảnh lên máy chủ.", message.chat.id, msg.message_id)
     else:
-        bot.reply_to(message, "❌ Vui lòng gửi 1 bức ảnh, không phải file hay văn bản.", reply_markup=admin_main_menu())
+        bot.reply_to(message, "❌ Vui lòng gửi 1 bức ảnh.", reply_markup=admin_main_menu())
 
-# Luồng xử lý Admin khác
+# Các luồng xử lý Admin khác
 def process_take_keys(message, prod_id, prod_name):
     try:
         amount = int(message.text.strip())
