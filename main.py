@@ -30,7 +30,6 @@ def get_products():
         return res.json() if res.json() else {}
     except: return {}
 
-# Hàm lấy avatar bot
 def get_avatar_url():
     try:
         res = requests.get(FIREBASE_URL + "settings/avatar.json")
@@ -41,19 +40,16 @@ def get_avatar_url():
         pass
     return "https://i.imgur.com/V3Y6p2w.jpeg" 
 
-# ================= GIAO DIỆN HTML SIÊU ĐẸP =================
-def render_loading_page(title, message, is_success=True):
+# ================= GIAO DIỆN HTML (CÓ THANH TIẾN TRÌNH VÀ COPY MÃ) =================
+def render_success_page(otp_code):
     avatar_url = get_avatar_url()
-    color = "#61c995" if is_success else "#a91f2b"
-    icon = "✔" if is_success else "✖"
-    
     return f"""
     <!DOCTYPE html>
     <html lang="vi">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>{title}</title>
+        <title>Nhận Mã OTP</title>
         <style>
             body {{
                 margin: 0; padding: 0; background: #0b090a;
@@ -61,60 +57,124 @@ def render_loading_page(title, message, is_success=True):
                 height: 100vh; font-family: 'Segoe UI', sans-serif;
                 color: #f6eef0; overflow: hidden;
             }}
-            .container {{ text-align: center; position: relative; }}
-            
-            /* Vòng xoay */
-            .loader-wrapper {{
-                position: relative; width: 150px; height: 150px; margin: 0 auto 20px auto;
-            }}
+            .container {{ text-align: center; }}
+            .loader-wrapper {{ position: relative; width: 120px; height: 120px; margin: 0 auto 20px auto; }}
             .loader-ring {{
                 position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-                border: 4px solid transparent;
-                border-top-color: #f6eef0; border-right-color: #f6eef0;
+                border: 4px solid transparent; border-top-color: #f6eef0; border-right-color: #f6eef0;
                 border-radius: 50%; animation: spin 1s linear infinite;
-                transition: opacity 0.5s;
             }}
             .avatar {{
-                position: absolute; top: 10px; left: 10px; width: 130px; height: 130px;
+                position: absolute; top: 10px; left: 10px; width: 100px; height: 100px;
                 border-radius: 50%; object-fit: cover; border: 2px solid #38282d;
-                transition: all 0.5s;
             }}
-            
-            /* Dấu tích hiện ra khi thành công */
-            .checkmark {{
-                position: absolute; top: 10px; left: 10px; width: 130px; height: 130px;
-                background: {color}; border-radius: 50%; display: flex;
-                justify-content: center; align-items: center;
-                font-size: 70px; color: white; opacity: 0;
-                transform: scale(0.5); transition: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-            }}
-            
             @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
             
-            h1 {{ font-size: 28px; margin: 10px 0; letter-spacing: 2px; text-transform: uppercase; color: {color}; opacity: 0; transition: 0.5s; }}
-            p {{ color: #b7a8ac; font-size: 15px; margin-bottom: 20px; opacity: 0; transition: 0.5s; }}
+            h1 {{ font-size: 24px; margin: 10px 0; letter-spacing: 1px; text-transform: uppercase; color: #61c995; }}
+            p {{ color: #b7a8ac; font-size: 14px; margin-bottom: 20px; }}
             
-            .success-state .loader-ring {{ opacity: 0; }}
-            .success-state .checkmark {{ opacity: 1; transform: scale(1); }}
-            .success-state h1, .success-state p {{ opacity: 1; }}
+            /* Thanh tiến trình */
+            .progress-container {{
+                width: 250px; height: 10px; background: #38282d; border-radius: 5px;
+                margin: 20px auto; overflow: hidden; display: none;
+            }}
+            .progress-bar {{
+                height: 100%; width: 0%; background: #61c995;
+                transition: width 0.1s linear; border-radius: 5px;
+            }}
+            .progress-text {{ font-size: 14px; color: #61c995; margin-bottom: 20px; display: none; }}
+
+            /* Khung chứa mã OTP */
+            .otp-box {{
+                display: none; margin-top: 20px; animation: fadeIn 0.5s;
+            }}
+            .otp-code {{
+                font-size: 32px; font-weight: bold; letter-spacing: 5px;
+                color: #f6eef0; margin: 15px 0; padding: 15px;
+                background: #151113; border: 2px dashed #61c995; border-radius: 10px;
+            }}
+            .copy-btn {{
+                background: #61c995; color: #000; border: none; padding: 12px 30px;
+                font-size: 16px; font-weight: bold; border-radius: 8px; cursor: pointer;
+                transition: 0.2s; width: 80%;
+            }}
+            .copy-btn:active {{ transform: scale(0.95); }}
+            
+            @keyframes fadeIn {{ from {{ opacity: 0; transform: translateY(10px); }} to {{ opacity: 1; transform: translateY(0); }} }}
         </style>
     </head>
     <body>
-        <div class="container" id="container">
-            <div class="loader-wrapper">
+        <div class="container">
+            <div class="loader-wrapper" id="loader">
                 <div class="loader-ring"></div>
                 <img src="{avatar_url}" class="avatar" alt="Avatar">
-                <div class="checkmark">{icon}</div>
             </div>
-            <h1>{title}</h1>
-            <p>{message}</p>
+            
+            <h1 id="status-title">Đang Xử Lý...</h1>
+            <p id="status-msg">Vui lòng chờ trong giây lát...</p>
+            
+            <div class="progress-container" id="progress-container">
+                <div class="progress-bar" id="progress-bar"></div>
+            </div>
+            <div class="progress-text" id="progress-text">0%</div>
+
+            <div class="otp-box" id="otp-box">
+                <p style="color:#f6eef0;">Mã nhận Acc của bạn là:</p>
+                <div class="otp-code" id="otp-text">{otp_code}</div>
+                <button class="copy-btn" onclick="copyCode()">📋 SAO CHÉP MÃ</button>
+                <p style="margin-top:15px; font-size:12px;">Sao chép mã và dán vào Telegram để nhận Acc!</p>
+            </div>
         </div>
 
         <script>
-            // Đợi 1.5 giây để tạo hiệu ứng "Đang xác nhận..." rồi mới biến thành "Thành công"
-            setTimeout(function() {{
-                document.getElementById('container').classList.add('success-state');
-            }}, 1500);
+            const progressBar = document.getElementById('progress-bar');
+            const progressText = document.getElementById('progress-text');
+            const progressContainer = document.getElementById('progress-container');
+            const otpBox = document.getElementById('otp-box');
+            const statusTitle = document.getElementById('status-title');
+            const statusMsg = document.getElementById('status-msg');
+            const loader = document.getElementById('loader');
+
+            let progress = 0;
+            progressContainer.style.display = 'block';
+            progressText.style.display = 'block';
+            statusTitle.innerText = "Đang Tạo Mã...";
+
+            // Chạy thanh tiến trình
+            let interval = setInterval(() => {
+                progress += Math.floor(Math.random() * 10) + 2; // Tăng ngẫu nhiên 2-12%
+                if (progress > 100) progress = 100;
+                
+                progressBar.style.width = progress + '%';
+                progressText.innerText = progress + '%';
+
+                if (progress === 100) {
+                    clearInterval(interval);
+                    setTimeout(() => {
+                        // Ẩn loading, hiện mã OTP
+                        loader.style.display = 'none';
+                        statusTitle.innerText = "THÀNH CÔNG!";
+                        statusTitle.style.color = "#61c995";
+                        statusMsg.innerText = "Nhiệm vụ hoàn tất.";
+                        progressContainer.style.display = 'none';
+                        progressText.style.display = 'none';
+                        otpBox.style.display = 'block';
+                    }, 500);
+                }
+            }, 100);
+
+            function copyCode() {{
+                const code = document.getElementById('otp-text').innerText;
+                navigator.clipboard.writeText(code).then(() => {
+                    const btn = document.querySelector('.copy-btn');
+                    btn.innerText = '✅ ĐÃ SAO CHÉP';
+                    btn.style.background = '#fff';
+                    setTimeout(() => {
+                        btn.innerText = '📋 SAO CHÉP MÃ';
+                        btn.style.background = '#61c995';
+                    } , 2000);
+                });
+            }}
         </script>
     </body>
     </html>
@@ -129,9 +189,9 @@ def reset_daily_history():
         time.sleep(seconds_until_midnight) 
         try:
             requests.delete(FIREBASE_URL + "history.json")
-            print("-> Đã reset lịch sử lúc 00:00")
+            print("-> Đã reset toàn bộ lịch sử lấy acc lúc 00:00")
         except Exception as e:
-            print("Lỗi reset:", e)
+            print("Lỗi reset history:", e)
 
 # ================= WEBHOOKS =================
 @app.route(f'/{BOT_TOKEN}', methods=['POST'])
@@ -169,7 +229,7 @@ def link4m_callback(chat_id, token_from_url):
         if session:
             saved_token = session.get("active_token")
             if saved_token != token_from_url:
-                return render_loading_page("Lỗi Xác Thực", "Link đã dùng hoặc không hợp lệ.", is_success=False), 403
+                return "<html><body style='background:#0b090a;color:#f6eef0;text-align:center;padding-top:50px;'><h2 style='color:#a91f2b;'>LỖI XÁC THỰC</h2></body></html>", 403
             
             requests.delete(FIREBASE_URL + f"sessions/{chat_id}/active_token.json")
             links_done = session.get("links_done", 0) + 1
@@ -181,23 +241,32 @@ def link4m_callback(chat_id, token_from_url):
                 requests.put(FIREBASE_URL + f"otps/{otp}.json", json={"chat_id": chat_id, "product_id": prod_id})
                 requests.delete(FIREBASE_URL + f"sessions/{chat_id}.json")
                 
+                # GỬI TIN NHẮN NHẮC KHÁCH (KHÔNG CẦN /CLAIM)
                 msg = (f"🎉 **VƯỢT LINK THÀNH CÔNG!**\n\n"
-                       f"Để nhận tài khoản, hãy gõ lệnh:\n"
-                       f"`/claim {otp}`\n\n"
-                       f"*(Mã này sẽ hết hạn sau 5 phút)*")
+                       f"Hãy quay lại trang Web vừa mở để lấy mã OTP.\n"
+                       f"Sau đó chỉ cần **dán mã OTP** vào đây là Bot tự động gửi Acc (Không cần gõ /claim).")
                 bot.send_message(chat_id, msg, parse_mode='Markdown')
                 
-                return render_loading_page("Thành Công", "Vui lòng quay lại Telegram để nhận mã OTP.", is_success=True), 200
+                # TRẢ VỀ TRANG HTML CÓ THANH TIẾN TRÌNH VÀ MÃ OTP
+                return render_success_page(otp), 200
             else:
                 requests.put(FIREBASE_URL + f"sessions/{chat_id}/links_done.json", json=links_done)
                 generate_link4m(chat_id, prod_id, links_done, req_links)
                 
-                return render_loading_page(f"Đã Xác Nhận {links_done}/{req_links}", "Vui lòng quay lại Telegram để làm tiếp.", is_success=True), 200
+                # NẾU CHƯA ĐỦ LINK, TRẢ VỀ TRANG CŨ
+                html_wait = f"""
+                <html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+                <body style="background:#0b090a;color:#61c995;text-align:center;padding-top:50px;font-family:sans-serif;">
+                <h2>ĐÃ XÁC NHẬN LINK {links_done}/{req_links}</h2>
+                <p style="color:#f6eef0;">Vui lòng quay lại Telegram để làm tiếp.</p>
+                </body></html>
+                """
+                return html_wait, 200
         return "Session not found", 404
     except Exception as e:
         return "Error", 500
 
-# ================= UPLOAD AVATAR =================
+# ================= UPLOAD AVATAR LÊN IMGUR =================
 def upload_to_imgur(file_id):
     try:
         file_info = bot.get_file(file_id)
@@ -365,11 +434,11 @@ def process_change_avatar(message):
             requests.put(FIREBASE_URL + "settings/avatar.json", json=imgur_url)
             bot.edit_message_text("✅ Đã cập nhật Avatar Web thành công!", message.chat.id, msg.message_id)
         else:
-            bot.edit_message_text("❌ Lỗi khi tải ảnh lên máy chủ.", message.chat.id, msg.message_id)
+            bot.edit_message_text("❌ Lỗi khi tải ảnh lên máy chủ. Thử lại sau!", message.chat.id, msg.message_id)
     else:
-        bot.reply_to(message, "❌ Vui lòng gửi 1 bức ảnh.", reply_markup=admin_main_menu())
+        bot.reply_to(message, "❌ Vui lòng gửi 1 bức ảnh, không phải file hay văn bản.", reply_markup=admin_main_menu())
 
-# Các luồng xử lý Admin khác
+# Luồng xử lý Admin khác
 def process_take_keys(message, prod_id, prod_name):
     try:
         amount = int(message.text.strip())
@@ -489,62 +558,59 @@ def buy_product(call):
     except Exception as e:
         print("Lỗi nút bấm:", e)
 
-# ================= NHẬN MÃ OTP =================
-@bot.message_handler(commands=['claim'])
-def claim_acc(message):
+# ================= TỰ ĐỘNG NHẬN DIỆN OTP (KHÔNG CẦN /CLAIM) =================
+@bot.message_handler(func=lambda message: True)
+def handle_all_messages(message):
     chat_id = message.chat.id
-    try:
-        otp = message.text.replace('/claim', '').strip()
-        res = requests.get(FIREBASE_URL + f"otps/{otp}.json")
+    text = message.text.strip()
+    
+    # Nếu tin nhắn là mã OTP 6 số
+    if text.isdigit() and len(text) == 6:
+        res = requests.get(FIREBASE_URL + f"otps/{text}.json")
         session = res.json()
         
-        if not session:
-            bot.reply_to(message, "❌ Mã OTP không hợp lệ hoặc đã hết hạn!")
-            return
-        if session["chat_id"] != chat_id:
-            bot.reply_to(message, "❌ Không phải mã của bạn!")
-            return
+        if session:
+            if session["chat_id"] != chat_id:
+                bot.reply_to(message, "❌ Mã OTP này không phải của bạn!")
+                return
+                
+            prod_id = session["product_id"]
+            prod_res = requests.get(FIREBASE_URL + f"products/{prod_id}.json")
+            prod_data = prod_res.json()
             
-        prod_id = session["product_id"]
-        prod_res = requests.get(FIREBASE_URL + f"products/{prod_id}.json")
-        prod_data = prod_res.json()
-        
-        if not prod_data:
-            requests.delete(FIREBASE_URL + f"otps/{otp}.json")
-            bot.reply_to(message, "❌ Sản phẩm này không còn tồn tại!")
+            if not prod_data:
+                requests.delete(FIREBASE_URL + f"otps/{text}.json")
+                bot.reply_to(message, "❌ Sản phẩm này không còn tồn tại!")
+                return
+                
+            max_claims = prod_data.get("max_claims", 1)
+            today = get_today()
+            history_res = requests.get(FIREBASE_URL + f"history/{chat_id}/{prod_id}/{today}.json")
+            data_hist = history_res.json()
+            claims_today = data_hist if isinstance(data_hist, int) else 0
+            
+            if claims_today >= max_claims:
+                requests.delete(FIREBASE_URL + f"otps/{text}.json")
+                bot.reply_to(message, "❌ **Bạn đã vượt đủ số lượng hôm nay!**\nVui lòng quay lại sau 00:00 để tiếp tục.")
+                return
+                
+            requests.put(FIREBASE_URL + f"history/{chat_id}/{prod_id}/{today}.json", json=claims_today + 1)
+            requests.delete(FIREBASE_URL + f"otps/{text}.json") 
+                
+            res_acc = requests.get(FIREBASE_URL + f"products/{prod_id}/stock.json")
+            stock = res_acc.json()
+            
+            if not stock:
+                bot.reply_to(message, "❌ Kho đã hết tài khoản! Lượt vượt của bạn hôm nay đã bị trừ. Vui lòng liên hệ @mduyk để hỗ trợ.")
+                return
+                
+            acc_key = list(stock.keys())[0]
+            acc_data = stock[acc_key]
+            
+            requests.delete(FIREBASE_URL + f"products/{prod_id}/stock/{acc_key}.json")
+            
+            bot.reply_to(message, f"🎁 **TÀI KHOẢN CỦA BẠN:**\n\n`{acc_data['user']} | {acc_data['pass']}`\n\n*(Hãy copy ngay)*", parse_mode='Markdown')
             return
-            
-        max_claims = prod_data.get("max_claims", 1)
-        
-        today = get_today()
-        history_res = requests.get(FIREBASE_URL + f"history/{chat_id}/{prod_id}/{today}.json")
-        data_hist = history_res.json()
-        claims_today = data_hist if isinstance(data_hist, int) else 0
-        
-        if claims_today >= max_claims:
-            requests.delete(FIREBASE_URL + f"otps/{otp}.json")
-            bot.reply_to(message, "❌ **Bạn đã vượt đủ số lượng hôm nay!**\nVui lòng quay lại sau 00:00 để tiếp tục.")
-            return
-            
-        requests.put(FIREBASE_URL + f"history/{chat_id}/{prod_id}/{today}.json", json=claims_today + 1)
-        requests.delete(FIREBASE_URL + f"otps/{otp}.json") 
-            
-        res_acc = requests.get(FIREBASE_URL + f"products/{prod_id}/stock.json")
-        stock = res_acc.json()
-        
-        if not stock:
-            bot.reply_to(message, "❌ Kho đã hết tài khoản! Lượt vượt của bạn hôm nay đã bị trừ. Vui lòng liên hệ @mduyk để hỗ trợ.")
-            return
-            
-        acc_key = list(stock.keys())[0]
-        acc_data = stock[acc_key]
-        
-        requests.delete(FIREBASE_URL + f"products/{prod_id}/stock/{acc_key}.json")
-        
-        bot.reply_to(message, f"🎁 **TÀI KHOẢN CỦA BẠN:**\n\n`{acc_data['user']} | {acc_data['pass']}`\n\n*(Hãy copy ngay)*", parse_mode='Markdown')
-        
-    except Exception as e:
-        bot.reply_to(message, f"Lỗi: {e}")
 
 # --- CHẠY NGẦM RESET LÚC 00:00 ---
 def start_reset_thread():
