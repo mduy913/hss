@@ -40,11 +40,12 @@ def get_avatar_url():
         pass
     return "https://i.imgur.com/V3Y6p2w.jpeg" 
 
-# ================= GIAO DIỆN HTML (SỬA LỖI NGOẶC) =================
+# ================= GIAO DIỆN HTML ĐẸP (ĐÃ SỬA LỖI) =================
 def render_success_page(otp_code):
     avatar_url = get_avatar_url()
-    # Dùng replace để tránh lỗi cú pháp f-string trong CSS
-    html_template = """
+    
+    # Sử dụng .replace() thay vì f-string để tránh lỗi cú pháp CSS
+    html = """
     <!DOCTYPE html>
     <html lang="vi">
     <head>
@@ -74,7 +75,7 @@ def render_success_page(otp_code):
         <div class="container">
             <div class="loader-wrapper" id="loader">
                 <div class="loader-ring"></div>
-                <img src="AVATAR_URL" class="avatar" alt="Avatar">
+                <img src="__AVATAR__" class="avatar" alt="Avatar">
             </div>
             
             <h1 id="status-title">Đang Xử Lý...</h1>
@@ -87,7 +88,7 @@ def render_success_page(otp_code):
 
             <div class="otp-box" id="otp-box">
                 <p style="color:#f6eef0;">Mã nhận Acc của bạn là:</p>
-                <div class="otp-code" id="otp-text">OTP_CODE</div>
+                <div class="otp-code" id="otp-text">__OTP__</div>
                 <button class="copy-btn" onclick="copyCode()">📋 SAO CHÉP MÃ</button>
                 <p style="margin-top:15px; font-size:12px;">Sao chép mã và dán vào Telegram để nhận Acc!</p>
             </div>
@@ -144,9 +145,7 @@ def render_success_page(otp_code):
     </body>
     </html>
     """
-    html_template = html_template.replace("AVATAR_URL", avatar_url)
-    html_template = html_template.replace("OTP_CODE", otp_code)
-    return html_template
+    return html.replace("__AVATAR__", avatar_url).replace("__OTP__", otp_code)
 
 # ================= HÀM TỰ ĐỘNG XOÁ LỊCH SỬ LÚC 00:00 =================
 def reset_daily_history():
