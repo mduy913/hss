@@ -176,19 +176,39 @@ def receive_update():
         return '', 200
     return '', 403
 
-def generate_vietuser_link(chat_id, prod_id, links_done, req_links):
-    """Tạo link VietUser bằng POST; token chỉ gửi trong Authorization header."""
-    unique_token = f"MDUYK-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
+def firebase_json(method, path, payload=None, timeout=12):
+    """Gọi Firebase REST và kiểm tra HTTP status rõ ràng."""
+    url = FIREBASE_URL + path.lstrip("/")
+    response = requests.request(method, url, json=payload, timeout=timeout)
+    response.raise_for_status()
+    return response.json() if response.content else None
+
+
+def generate_vietuser_link(chat_id, prod_id, links_done, req_links, flow_id=None):
+    """Tạo link VietUser. Mỗi link có token riêng, không ghi đè phiên khác."""
+    flow_id = flow_id or ''.join(random.choices(string.ascii_letters + string.digits, k=20))
+    unique_token = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
     target_url = f"{RENDER_URL}/callback/{chat_id}/{unique_token}"
+    token_path = f"sessions/{chat_id}/tokens/{unique_token}.json"
+    flow_path = f"sessions/{chat_id}/flows/{flow_id}.json"
 
     try:
-        # Lưu token phiên trước khi phát hành link để callback có thể xác thực.
-        save_res = requests.put(
-            f"{FIREBASE_URL}sessions/{chat_id}/active_token.json",
-            json=unique_token,
-            timeout=10,
-        )
-        save_res.raise_for_status()
+        # Lưu dữ liệu flow và token riêng trước khi tạo link.
+        flow = firebase_json("GET", flow_path)
+        if not flow:
+            flow = {
+                "product_id": prod_id,
+                "links_done": links_done,
+                "links_required": req_links,
+                "created_at": int(time.time()),
+            }
+            firebase_json("PUT", flow_path, flow)
+
+        firebase_json("PUT", token_path, {
+            "flow_id": flow_id,
+            "created_at": int(time.time()),
+            "used": False,
+        })
 
         response = requests.post(
             "https://vietuser.com/api-shorten/v2",
@@ -202,18 +222,14 @@ def generate_vietuser_link(chat_id, prod_id, links_done, req_links):
         )
         response.raise_for_status()
         data = response.json()
-
         short_url = data.get("shortenedUrl") if data.get("status") == "success" else None
-        if not short_url or not short_url.startswith("https://"):
-            message = data.get("message", "API không trả về shortenedUrl hợp lệ")
-            print(f"VietUser API error: {message}")
-            bot.send_message(chat_id, "❌ VietUser không tạo được liên kết. Vui lòng thử lại sau.")
-            return False
+        parsed = urllib.parse.urlparse(short_url or "")
+        if parsed.scheme != "https" or parsed.netloc.lower() != "vietuser.com":
+            raise ValueError(data.get("message", "VietUser trả về shortenedUrl không hợp lệ"))
 
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton(
-            f"👉 VƯỢT LINK {links_done + 1}/{req_links}",
-            url=short_url,
+            f"👉 VƯỢT LINK {links_done + 1}/{req_links}", url=short_url
         ))
         bot.send_message(
             chat_id,
@@ -222,59 +238,83 @@ def generate_vietuser_link(chat_id, prod_id, links_done, req_links):
         )
         return True
     except requests.RequestException as exc:
-        print(f"VietUser request failed: {exc}")
-        bot.send_message(chat_id, "❌ Không thể kết nối VietUser. Vui lòng thử lại sau.")
+        print(f"VietUser/Firebase request failed: {exc}")
+        try:
+            firebase_json("DELETE", token_path)
+        except Exception:
+            pass
+        bot.send_message(chat_id, "❌ Không thể tạo liên kết lúc này. Vui lòng thử lại sau.")
     except (ValueError, TypeError) as exc:
         print(f"VietUser response invalid: {exc}")
+        try:
+            firebase_json("DELETE", token_path)
+        except Exception:
+            pass
         bot.send_message(chat_id, "❌ Phản hồi từ VietUser không hợp lệ.")
     except Exception as exc:
-        print(f"Unexpected VietUser error: {exc}")
+        print(f"Unexpected link generation error: {exc}")
         bot.send_message(chat_id, "❌ Có lỗi khi tạo liên kết. Vui lòng thử lại sau.")
     return False
+
 
 @app.route('/callback/<chat_id>/<token_from_url>', methods=['GET'])
 def vietuser_callback(chat_id, token_from_url):
     try:
         chat_id = int(chat_id)
-        res = requests.get(FIREBASE_URL + f"sessions/{chat_id}.json")
-        session = res.json()
-        
-        if session:
-            saved_token = session.get("active_token")
-            if saved_token != token_from_url:
-                return "<html><body style='background:#0b090a;color:#f6eef0;text-align:center;padding-top:50px;'><h2 style='color:#a91f2b;'>LỖI XÁC THỰC</h2></body></html>", 403
-            
-            requests.delete(FIREBASE_URL + f"sessions/{chat_id}/active_token.json")
-            links_done = session.get("links_done", 0) + 1
-            req_links = session.get("links_required", 1)
-            prod_id = session.get("product_id")
-            
-            if links_done >= req_links:
-                otp = ''.join(random.choices(string.digits, k=6))
-                requests.put(FIREBASE_URL + f"otps/{otp}.json", json={"chat_id": chat_id, "product_id": prod_id})
-                requests.delete(FIREBASE_URL + f"sessions/{chat_id}.json")
-                
-                msg = (f"🎉 **VƯỢT LINK THÀNH CÔNG!**\n\n"
-                       f"Hãy quay lại trang Web vừa mở để lấy mã OTP.\n"
-                       f"Sau đó chỉ cần **dán mã OTP** vào đây.")
-                bot.send_message(chat_id, msg, parse_mode='Markdown')
-                
-                return render_success_page(otp), 200
-            else:
-                requests.put(FIREBASE_URL + f"sessions/{chat_id}/links_done.json", json=links_done)
-                generate_vietuser_link(chat_id, prod_id, links_done, req_links)
-                
-                html_wait = f"""
-                <html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-                <body style="background:#0b090a;color:#61c995;text-align:center;padding-top:50px;font-family:sans-serif;">
-                <h2>ĐÃ XÁC NHẬN LINK {links_done}/{req_links}</h2>
-                <p style="color:#f6eef0;">Vui lòng quay lại Telegram để làm tiếp.</p>
-                </body></html>
-                """
-                return html_wait, 200
-        return "Session not found", 404
-    except Exception as e:
-        return "Error", 500
+        token_path = f"sessions/{chat_id}/tokens/{token_from_url}.json"
+        token_data = firebase_json("GET", token_path)
+        if not isinstance(token_data, dict) or token_data.get("used"):
+            return ("<html><body style='background:#0b090a;color:#f6eef0;text-align:center;"
+                    "padding-top:50px;font-family:sans-serif;'><h2 style='color:#a91f2b;'>"
+                    "LINK KHÔNG HỢP LỆ HOẶC ĐÃ ĐƯỢC XÁC NHẬN</h2><p>Hãy quay lại Telegram và tạo link mới.</p>"
+                    "</body></html>"), 403
+
+        flow_id = token_data.get("flow_id")
+        if not flow_id:
+            return "Phiên xác thực không hợp lệ", 403
+        flow_path = f"sessions/{chat_id}/flows/{flow_id}.json"
+        flow = firebase_json("GET", flow_path)
+        if not isinstance(flow, dict):
+            return "Phiên xác thực đã hết hạn. Hãy tạo link mới trên Telegram.", 404
+
+        # Đánh dấu token đã dùng trước khi cấp OTP để callback refresh không cộng lượt lần nữa.
+        token_data["used"] = True
+        token_data["used_at"] = int(time.time())
+        firebase_json("PUT", token_path, token_data)
+
+        links_done = int(flow.get("links_done", 0)) + 1
+        req_links = max(1, int(flow.get("links_required", 1)))
+        prod_id = flow.get("product_id")
+        flow["links_done"] = links_done
+        firebase_json("PUT", flow_path, flow)
+
+        if links_done >= req_links:
+            otp = ''.join(random.choices(string.digits, k=6))
+            firebase_json("PUT", f"otps/{otp}.json", {
+                "chat_id": chat_id,
+                "product_id": prod_id,
+                "created_at": int(time.time()),
+            })
+            firebase_json("DELETE", flow_path)
+            bot.send_message(
+                chat_id,
+                "🎉 **VƯỢT LINK THÀNH CÔNG!**\n\n"
+                "Hãy quay lại trang vừa mở để lấy mã OTP, sau đó dán mã vào Telegram.",
+                parse_mode="Markdown",
+            )
+            return render_success_page(otp), 200
+
+        generate_vietuser_link(chat_id, prod_id, links_done, req_links, flow_id=flow_id)
+        return f"""<html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        <body style="background:#0b090a;color:#61c995;text-align:center;padding:50px 15px;font-family:sans-serif;">
+        <h2>ĐÃ XÁC NHẬN LINK {links_done}/{req_links}</h2>
+        <p style="color:#f6eef0;">Vui lòng quay lại Telegram để tiếp tục.</p></body></html>""", 200
+    except requests.RequestException as exc:
+        print(f"Firebase callback request failed: {exc}")
+        return "Không thể xác nhận lúc này. Vui lòng thử lại sau.", 503
+    except Exception as exc:
+        print(f"VietUser callback error: {exc}")
+        return "Có lỗi khi xác nhận liên kết.", 500
 
 # ================= UPLOAD AVATAR LÊN IMGUR =================
 def upload_to_imgur(file_id):
@@ -671,10 +711,13 @@ def buy_product(call):
             bot.send_message(chat_id, msg, parse_mode='Markdown')
             return
 
-        req_links = products[prod_id]["links_required"]
-        requests.put(FIREBASE_URL + f"sessions/{chat_id}.json", json={"product_id": prod_id, "links_done": 0, "links_required": req_links})
+        req_links = max(1, int(products[prod_id].get("links_required", 1)))
+        flow_id = ''.join(random.choices(string.ascii_letters + string.digits, k=20))
+        flow = {"product_id": prod_id, "links_done": 0, "links_required": req_links,
+                "created_at": int(time.time())}
+        firebase_json("PUT", f"sessions/{chat_id}/flows/{flow_id}.json", flow)
         bot.delete_message(chat_id, call.message.message_id)
-        generate_vietuser_link(chat_id, prod_id, 0, req_links)
+        generate_vietuser_link(chat_id, prod_id, 0, req_links, flow_id=flow_id)
     except Exception as e:
         print("Lỗi nút bấm:", e)
 
