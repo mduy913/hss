@@ -6,15 +6,21 @@ import string
 import threading
 import time
 import urllib.parse
+import os
 from datetime import datetime, timedelta
 from flask import Flask, request
 
 # ================= CẤU HÌNH =================
-BOT_TOKEN = "8314558446:AAFGz92fVeLdomzfN0EeNZk-HFtDSC8hHEg"
-LINK4M_TOKEN = "699ac288bb556c3eae114a58"
-RENDER_URL = "https://hss-hsha.onrender.com" 
-FIREBASE_URL = "https://shopmduy-default-rtdb.asia-southeast1.firebasedatabase.app/"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+VIETUSER_API_TOKEN = os.getenv("VIETUSER_API_TOKEN", "").strip()
+RENDER_URL = os.getenv("RENDER_URL", "https://hss-hsha.onrender.com").rstrip("/")
+FIREBASE_URL = os.getenv("FIREBASE_URL", "https://shopmduy-default-rtdb.asia-southeast1.firebasedatabase.app/").rstrip("/") + "/"
 # ============================================
+
+if not BOT_TOKEN:
+    raise RuntimeError("Thiếu biến môi trường BOT_TOKEN trên Render")
+if not VIETUSER_API_TOKEN:
+    raise RuntimeError("Thiếu biến môi trường VIETUSER_API_TOKEN trên Render")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
@@ -170,24 +176,64 @@ def receive_update():
         return '', 200
     return '', 403
 
-def generate_link4m(chat_id, prod_id, links_done, req_links):
+def generate_vietuser_link(chat_id, prod_id, links_done, req_links):
+    """Tạo link VietUser bằng POST; token chỉ gửi trong Authorization header."""
     unique_token = f"MDUYK-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
-    requests.put(FIREBASE_URL + f"sessions/{chat_id}/active_token.json", json=unique_token)
-    
     target_url = f"{RENDER_URL}/callback/{chat_id}/{unique_token}"
-    api_url = f"https://link4m.co/api-shorten/v2?api={LINK4M_TOKEN}&url={target_url}"
-    
+
     try:
-        res = requests.get(api_url, timeout=10).json()
-        if res.get('status') == 'success':
-            markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton(f"👉 VƯỢT LINK {links_done + 1}/{req_links}", url=res.get('shortenedUrl')))
-            bot.send_message(chat_id, f"Vui lòng vượt link {links_done + 1}/{req_links} bên dưới.", reply_markup=markup)
-    except:
-        bot.send_message(chat_id, "❌ Lỗi tạo link từ Link4M!")
+        # Lưu token phiên trước khi phát hành link để callback có thể xác thực.
+        save_res = requests.put(
+            f"{FIREBASE_URL}sessions/{chat_id}/active_token.json",
+            json=unique_token,
+            timeout=10,
+        )
+        save_res.raise_for_status()
+
+        response = requests.post(
+            "https://vietuser.com/api-shorten/v2",
+            headers={
+                "Authorization": f"Bearer {VIETUSER_API_TOKEN}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            json={"url": target_url},
+            timeout=20,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        short_url = data.get("shortenedUrl") if data.get("status") == "success" else None
+        if not short_url or not short_url.startswith("https://"):
+            message = data.get("message", "API không trả về shortenedUrl hợp lệ")
+            print(f"VietUser API error: {message}")
+            bot.send_message(chat_id, "❌ VietUser không tạo được liên kết. Vui lòng thử lại sau.")
+            return False
+
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton(
+            f"👉 VƯỢT LINK {links_done + 1}/{req_links}",
+            url=short_url,
+        ))
+        bot.send_message(
+            chat_id,
+            f"Vui lòng vượt link {links_done + 1}/{req_links} bên dưới.",
+            reply_markup=markup,
+        )
+        return True
+    except requests.RequestException as exc:
+        print(f"VietUser request failed: {exc}")
+        bot.send_message(chat_id, "❌ Không thể kết nối VietUser. Vui lòng thử lại sau.")
+    except (ValueError, TypeError) as exc:
+        print(f"VietUser response invalid: {exc}")
+        bot.send_message(chat_id, "❌ Phản hồi từ VietUser không hợp lệ.")
+    except Exception as exc:
+        print(f"Unexpected VietUser error: {exc}")
+        bot.send_message(chat_id, "❌ Có lỗi khi tạo liên kết. Vui lòng thử lại sau.")
+    return False
 
 @app.route('/callback/<chat_id>/<token_from_url>', methods=['GET'])
-def link4m_callback(chat_id, token_from_url):
+def vietuser_callback(chat_id, token_from_url):
     try:
         chat_id = int(chat_id)
         res = requests.get(FIREBASE_URL + f"sessions/{chat_id}.json")
@@ -216,7 +262,7 @@ def link4m_callback(chat_id, token_from_url):
                 return render_success_page(otp), 200
             else:
                 requests.put(FIREBASE_URL + f"sessions/{chat_id}/links_done.json", json=links_done)
-                generate_link4m(chat_id, prod_id, links_done, req_links)
+                generate_vietuser_link(chat_id, prod_id, links_done, req_links)
                 
                 html_wait = f"""
                 <html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
@@ -281,8 +327,9 @@ def admin_main_menu():
     )
     markup.add(
         InlineKeyboardButton("⚙️ Chỉnh Sửa Sản Phẩm", callback_data="admin_edit_prod_menu"),
-        InlineKeyboardButton("🖼️ Đổi Avatar Web", callback_data="admin_change_avatar")
+        InlineKeyboardButton("🗑️ Xóa Sản Phẩm", callback_data="admin_delete_prod_menu")
     )
+    markup.add(InlineKeyboardButton("🖼️ Đổi Avatar Web", callback_data="admin_change_avatar"))
     markup.add(InlineKeyboardButton("🔄 Quay Lại", callback_data="admin_back"))
     return markup
 
@@ -351,6 +398,50 @@ def handle_admin_actions(call):
                 max_claims = data.get("max_claims", 1)
                 text += f"🔹 **{name}**: {stock_count} acc (Vượt {data.get('links_required', 1)} link, Tối đa {max_claims} lần/ngày)\n"
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode='Markdown', reply_markup=back_button())
+
+    elif call.data == "admin_delete_prod_menu":
+        products = get_products()
+        if not products:
+            bot.edit_message_text("Kho đang trống, không có sản phẩm để xóa.", call.message.chat.id, call.message.message_id, reply_markup=back_button())
+            return
+        markup = InlineKeyboardMarkup()
+        for key, data in products.items():
+            name = data.get("name", key)
+            markup.add(InlineKeyboardButton(f"🗑️ {name}", callback_data=f"admin_delete_prod_{key}"))
+        markup.add(InlineKeyboardButton("🔙 Quay Lại", callback_data="admin_back"))
+        bot.edit_message_text("Chọn sản phẩm muốn xóa:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+    elif call.data.startswith('admin_delete_confirm_'):
+        prod_id = call.data[len('admin_delete_confirm_'):]
+        products = get_products()
+        if prod_id not in products:
+            bot.edit_message_text("❌ Sản phẩm không còn tồn tại.", call.message.chat.id, call.message.message_id, reply_markup=admin_main_menu())
+            return
+        prod_name = products[prod_id].get("name", prod_id)
+        try:
+            response = requests.delete(FIREBASE_URL + f"products/{prod_id}.json", timeout=15)
+            response.raise_for_status()
+            bot.edit_message_text(f"✅ Đã xóa sản phẩm: {prod_name}\nDữ liệu kho acc của sản phẩm cũng đã bị xóa.", call.message.chat.id, call.message.message_id, reply_markup=admin_main_menu())
+        except requests.RequestException as exc:
+            print(f"Delete product failed: {exc}")
+            bot.edit_message_text("❌ Không thể xóa sản phẩm do lỗi kết nối Firebase. Hãy thử lại.", call.message.chat.id, call.message.message_id, reply_markup=admin_main_menu())
+
+    elif call.data.startswith('admin_delete_prod_'):
+        prod_id = call.data[len('admin_delete_prod_'):]
+        products = get_products()
+        if prod_id not in products:
+            bot.answer_callback_query(call.id, "Sản phẩm không tồn tại.", show_alert=True)
+            return
+        prod_name = products[prod_id].get("name", prod_id)
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("✅ Xác nhận xóa", callback_data=f"admin_delete_confirm_{prod_id}"),
+            InlineKeyboardButton("❌ Hủy", callback_data="admin_delete_prod_menu")
+        )
+        bot.edit_message_text(
+            f"⚠️ XÁC NHẬN XÓA\n\nBạn chắc chắn muốn xóa sản phẩm **{prod_name}**?\n\nToàn bộ kho acc bên trong sản phẩm sẽ bị xóa và không thể khôi phục bằng bot.",
+            call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown"
+        )
 
     elif call.data == "admin_edit_prod_menu":
         products = get_products()
@@ -473,6 +564,71 @@ def process_add_acc_data(message, prod_id, prod_name):
     else:
         bot.send_message(message.chat.id, "❌ Không có acc nào được thêm.", reply_markup=admin_main_menu())
 
+# ================= TRA CỨU THỐNG KÊ VIETUSER (ADMIN) =================
+def request_vietuser_details(link_value):
+    value = link_value.strip()
+    if not value:
+        raise ValueError("Thiếu link hoặc slug")
+    # API nhận URL rút gọn; slug được chuẩn hóa thành URL VietUser.
+    if not value.startswith(("http://", "https://")):
+        value = "https://vietuser.com/r/" + value.lstrip("/")
+
+    response = requests.post(
+        "https://vietuser.com/api-shorten/v2/details",
+        headers={
+            "Authorization": f"Bearer {VIETUSER_API_TOKEN}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        json={"url": value},
+        timeout=20,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if data.get("status") != "success":
+        raise RuntimeError(data.get("message", "Không tra cứu được liên kết"))
+    return data
+
+@bot.message_handler(commands=["linkstats"])
+def start_link_stats(message):
+    try:
+        admin_res = requests.get(FIREBASE_URL + "admin_id.json", timeout=10)
+        admin_res.raise_for_status()
+        saved_admin = admin_res.json()
+        if str(saved_admin) != str(message.chat.id):
+            bot.reply_to(message, "❌ Chỉ Admin mới được dùng lệnh này.")
+            return
+        prompt = bot.reply_to(
+            message,
+            "Gửi link VietUser đã rút gọn hoặc mã slug để xem thống kê:",
+            reply_markup=ForceReply(selective=True),
+        )
+        bot.register_next_step_handler(prompt, process_link_stats)
+    except Exception as exc:
+        print(f"Không kiểm tra được quyền Admin: {exc}")
+        bot.reply_to(message, "❌ Không thể xác minh quyền Admin lúc này.")
+
+def process_link_stats(message):
+    try:
+        data = request_vietuser_details(message.text or "")
+        text = (
+            "📊 **THỐNG KÊ LIÊN KẾT VIETUSER**\n\n"
+            f"🔗 Link: {data.get('shortenedUrl', 'N/A')}\n"
+            f"🆔 Slug: `{data.get('slug', 'N/A')}`\n"
+            f"📌 Trạng thái: {data.get('linkStatus', 'N/A')}\n"
+            f"✅ Click thành công: {data.get('successfulClicks', 0)}\n"
+            f"👆 Tổng click: {data.get('totalClicks', data.get('clicks', 0))}\n"
+            f"👤 Click duy nhất: {data.get('uniqueClicks', 0)}\n"
+            f"💰 Doanh thu: {data.get('earnings', 0)} {data.get('currency', 'USD')}"
+        )
+        bot.send_message(message.chat.id, text, parse_mode="Markdown")
+    except requests.RequestException as exc:
+        print(f"VietUser details request failed: {exc}")
+        bot.reply_to(message, "❌ Không kết nối được VietUser để lấy thống kê.")
+    except Exception as exc:
+        print(f"VietUser details error: {exc}")
+        bot.reply_to(message, f"❌ Không lấy được thống kê: {str(exc)[:250]}")
+
 # ================= LỆNH NGƯỜI DÙNG =================
 @bot.callback_query_handler(func=lambda call: call.data.startswith('user_'))
 def handle_user_actions(call):
@@ -518,7 +674,7 @@ def buy_product(call):
         req_links = products[prod_id]["links_required"]
         requests.put(FIREBASE_URL + f"sessions/{chat_id}.json", json={"product_id": prod_id, "links_done": 0, "links_required": req_links})
         bot.delete_message(chat_id, call.message.message_id)
-        generate_link4m(chat_id, prod_id, 0, req_links)
+        generate_vietuser_link(chat_id, prod_id, 0, req_links)
     except Exception as e:
         print("Lỗi nút bấm:", e)
 
